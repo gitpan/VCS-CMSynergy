@@ -7,13 +7,13 @@ use strict;
 BEGIN 
 { 
     use_ok('VCS::CMSynergy', ':cached_attributes'); 
-    ok($VCS::CMSynergy::Use{cached_attributes}, q[using :cached_attributes]);
+    ok(VCS::CMSynergy::use_cached_attributes(), q[using :cached_attributes]);
 }
 
 my $ccm = VCS::CMSynergy->new(%::test_session);
 isa_ok($ccm, "VCS::CMSynergy");
 diag("using coprocess") if defined $ccm->{coprocess};
-diag("using cached_attributes") if $VCS::CMSynergy::Use{cached_attributes};
+diag("using cached_attributes") if VCS::CMSynergy::use_cached_attributes();
 
 my $e_got = $ccm->query_object("name match '*blurfl*'");
 ok(UNIVERSAL::isa($e_got, "ARRAY") && @$e_got == 0,
@@ -217,7 +217,7 @@ ok(eq_set($b_expected, objectnames($bc_got)),
    q[$ccm->query_object("name match 'b*'")]);
 # check for actually cached attributes (type specific)
 all_ok {
-    my $acache = $_->_acache;
+    my $acache = $_->_private->{acache};
     my $list = $_->list_attributes;
     foreach my $attr (qw(create_time owner status_log super_type))
     {

@@ -1,10 +1,14 @@
 #!/usr/bin/perl
 
-use Test::More tests => 20;
+use Test::More tests => 29;
 use t::util;
 use strict;
 
-BEGIN { use_ok('VCS::CMSynergy'); }
+BEGIN 
+{ 
+    use_ok('VCS::CMSynergy', ':cached_attributes'); 
+    ok(VCS::CMSynergy::use_cached_attributes(), q[using :cached_attributes]);
+}
 
 use File::Temp qw(tempfile);
 
@@ -12,6 +16,7 @@ my $ccm = VCS::CMSynergy->new(%::test_session);
 isa_ok($ccm, "VCS::CMSynergy");
 diag("using coprocess") if defined $ccm->{coprocess};
 
+# test tracing
 {
     my ($fh, $trace) = tempfile;
     close($fh);
@@ -33,6 +38,32 @@ diag("using coprocess") if defined $ccm->{coprocess};
 
     unlink($trace);
 }
+
+# test object<->cvid
+my $object = $ccm->object('main.c-1:csrc:1');
+ok($object->exists, qq[object exists]);
+my $cvid = $ccm->property(cvid => $object);
+like($cvid, qr/^\d+$/, q[check cvid]);
+my $object_from_cvid = $ccm->object_from_cvid($cvid);
+is("$object", "$object_from_cvid", q[object -> cvid -> same_object]);
+
+# test that the same objectname gives identical Perl objects
+# (when use_cached_attributes is in effect):
+# we need to rebless the VCS::CMSynergy::Objects into a dummy class
+# in order to compare them, otherwise the overloaded stringification
+# gets in our way
+SKIP: 
+{
+    skip "not using :cached_attributes", 1
+	unless VCS::CMSynergy::use_cached_attributes();
+
+    my $object2 = $ccm->object($object->objectname);
+    is(bless($object, "Reblessed"), bless($object2, "Reblessed"), 
+	q[identical Perl objects from same objectname when using :cached_attributes]);
+}
+
+# test that exists() on an non-existant object doesn't cause an exception 
+ok(!$ccm->object('frobozz.c-1:csrc:1')->exists, q[object doesn't exist]);
 
 SKIP: 
 {
@@ -103,29 +134,37 @@ my @trav_object_expected = @{ $ccm->query_object(
 push @trav_object_expected, $ccm->object($project);	
 # because recursive_is_member_of() does NOT include the project itself
 
-my (@trav_path_got, @trav_object_got, $preprocess, $postprocess);
-$ccm->traverse_project(
+my (@trav_path_got, @trav_object_got, $trav_tree_expected, $preprocess, $postprocess);
+ok($ccm->traverse_project(
   {
     wanted => sub {
       push @trav_object_got, $_;
-      push @trav_path_got, 
-        join("/", map { $_->name } @VCS::CMSynergy::Traversal::dirs, $_)
-	  unless $_->cvtype eq 'project';
-      },
+      return if $_->is_project;
+
+      my $path = join("/", map { $_->name } @VCS::CMSynergy::Traversal::dirs, $_);
+      push @trav_path_got, $path;
+      $trav_tree_expected->{$path} = $_;
+    },
     subprojects	=> 1,
     preprocess	=> sub { $preprocess++; return sort { $a->name cmp $b->name } @_; },
     postprocess => sub { $postprocess++; }
   },
-  $project);
+  $project), qq[traverse_project($project)]);
 
 ok(eq_set(objectnames(\@trav_object_got), objectnames(\@trav_object_expected)),
-  q[traverse_project with subprojects: check objects]);
+  q[traverse_project: check objects]);
 ok(eq_array(\@trav_path_got, \@trav_path_expected),
-  q[traverse_project with sub projects: check pathnames]);
+  q[traverse_project: check pathnames]);
 ok($preprocess == $postprocess, 
-  q[compare number of preprocess and postprocess calls]);
+  q[traverse_project: compare number of preprocess and postprocess calls]);
 ok($preprocess == (grep { $_->cvtype =~ /^(dir|project)$/ } @trav_object_expected),
-  q[compare number of preprocess calls to projects/dirs traversed]);
+  q[traverse_project: compare number of preprocess calls to projects/dirs traversed]);
+
+my $trav_tree_got = $ccm->project_tree(
+  { subprojects => 1, pathsep => "/" }, $project);
+isa_ok($trav_tree_got, "HASH", qq[project_tree($project)]);
+ok(eq_hash($trav_tree_expected, $trav_tree_got),
+  q[project_tree: compare results]);
 
 my @trav2_expected = 
 (
@@ -142,15 +181,15 @@ all_ok { UNIVERSAL::isa($_, 'VCS::CMSynergy::Object'); } \@trav2_got,
 ok(eq_set(objectnames(\@trav2_got), \@trav2_expected),
   q[traverse_project with start directory]);
 
-my @trav3_expected = grep { $_->cvtype eq 'project' } @trav_object_expected;
+my @trav3_expected = grep { $_->is_project } @trav_object_expected;
 my @trav3_got;
 $ccm->traverse_project(
   {
-    wanted => sub { push @trav3_got, $_ if $_->cvtype eq 'project'; },
+    wanted => sub { push @trav3_got, $_ if $_->is_project; },
     subprojects	=> 1,
   },
   $project);
-all_ok { $_->cvtype eq 'project' } \@trav3_got,
+all_ok { $_->is_project } \@trav3_got,
   q[traverse_project for all sub projects];
 ok(eq_set(objectnames(\@trav3_got), objectnames(\@trav3_expected)),
   q[traverse_project for all sub projects]);

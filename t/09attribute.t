@@ -13,7 +13,7 @@ BEGIN
     {
 	skip "not using :cached_attributes", 1 
 	    unless $ENV{CCM_USE_CACHED_ATTRIBUTES};
-	ok($VCS::CMSynergy::Use{cached_attributes}, q[using :cached_attributes]);
+	ok(VCS::CMSynergy::use_cached_attributes(), q[using :cached_attributes]);
     }
 }
 
@@ -23,7 +23,7 @@ END { &{ pop @cleanup } while @cleanup; }
 my $ccm = VCS::CMSynergy->new(%::test_session);
 isa_ok($ccm, "VCS::CMSynergy");
 diag("using coprocess") if defined $ccm->{coprocess};
-diag("using :cached_attributes") if $VCS::CMSynergy::Use{cached_attributes};
+diag("using :cached_attributes") if VCS::CMSynergy::use_cached_attributes();
 
 # test set_attribute with different values
 # we need a modifiable object...
@@ -72,8 +72,8 @@ ok(exists $ccm->list_attributes($folder)->{blurfl}, q[attribute was really creat
 SKIP:
 {
     skip "not using :cached_attributes", 1 
-	unless $VCS::CMSynergy::Use{cached_attributes};
-    ok(exists $fobj->_acache->{blurfl}, q[attribute was cached]);
+	unless VCS::CMSynergy::use_cached_attributes();
+    ok(exists $fobj->_private->{acache}->{blurfl}, q[attribute was cached]);
 }
 
 foreach my $value (@values)
@@ -87,8 +87,8 @@ foreach my $value (@values)
     SKIP:
     {
 	skip "not using :cached_attributes", 1 
-	    unless $VCS::CMSynergy::Use{cached_attributes};
-	is($fobj->_acache->{blurfl}, $value,
+	    unless VCS::CMSynergy::use_cached_attributes();
+	is($fobj->_private->{acache}->{blurfl}, $value,
 	    q[check cached attribute value]);
     }
 }
@@ -103,8 +103,8 @@ ok(!exists $ccm->list_attributes($folder)->{blurfl}, q[attribute was really dele
 SKIP:
 {
     skip "not using :cached_attributes", 1 
-	unless $VCS::CMSynergy::Use{cached_attributes};
-    ok(!exists $fobj->_acache->{blurfl}, q[attribute no longer cached]);
+	unless VCS::CMSynergy::use_cached_attributes();
+    ok(!exists $fobj->_private->{acache}->{blurfl}, q[attribute no longer cached]);
 }
 
 exit 0;

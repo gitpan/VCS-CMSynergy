@@ -53,7 +53,7 @@ sub hierarchy_project_members
 {
     my ($self, $proj_vers, $order_spec, @keywords) = @_;
 
-    $proj_vers .= ":project:1" 
+    $proj_vers .= ':project:' . $self->default_project_instance
 	unless ref $proj_vers || $proj_vers =~ /:project:/;
     $order_spec = 'none' unless defined $order_spec;
 

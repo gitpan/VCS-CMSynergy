@@ -6,21 +6,43 @@ VCS::CMSynergy::Changes - List of changes to VCS::CMSynergy
 
 Known problems:
 
-- IPC::Open3 croaks on NT if stdout or stderr is closed on entry
-  Reason is perhaps that perl opens the script file read-only and it gets
-  file descriptor 1 or 2 resp. 
-  Or it might be the GUI vs. CONSOLE application problem:
-  e.g. ccm run via IPC::Open3 from an application that is marked
-  exectype GUI seems to hang.
-
 - 'make test' on Windows with out-of-the-box CM Synergy installation:
    probably needs to specify -u and -home options for "ccm start"
 
 - OneArgFoo option lacks documentation
 
-- VCS::CMSynergy::Helper documentation
+- traverse_project()
+	what about absolute subprojects (with subprojects => 1)
 
 =head1 CHANGES
+
+=head2 Changes in Version 1.20
+
+  WARNING: This version is known NOT to work on Cygwin 
+  (due to CRLF vs LF issues).
+
+  IPC::Run3 is now a requisite module.
+
+  Dropped support for CM Synergy 4.5.
+
+  Implemented dcm_database_id(), dcm_delimiter(), dcm_enabled(), 
+  default_project_instance() and VCS::CMSynergy::Object::exists().
+
+  Implemented "unique" VCS::CMSynergy::Objects when using :cached_attributes.
+
+=head2 Changes in Version 1.19 (not released)
+
+  Implemented project_tree(), made examples/project_diff use it.
+
+  Replaced IPC::Open3 with IPC::Run3 in VCS::CMSynergy::Client::exec().
+
+  Implemented object_from_cvid(), documentet object_other_version().
+
+  Implemented VCS::CMSynergy::Object::copy_attribute().
+
+  Reinstated types() because of popular demand (read the ACcent sources
+  if you really want to know what exactly is returned by "ccm show -types").
+  Added migrate_auto_rules().
 
 =head2 Changes in Version 1.18
 

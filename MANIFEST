@@ -1,4 +1,5 @@
 lib/VCS/CMSynergy.pm
+lib/VCS/CMSynergy.pod
 lib/VCS/CMSynergy/Client.pm
 lib/VCS/CMSynergy/Helper.pm
 lib/VCS/CMSynergy/Object.pm
@@ -10,7 +11,6 @@ Makefile.PL
 MANIFEST
 META.yml
 README
-VERSION
 t/01session.t
 t/02autoload.t
 t/03query.t
@@ -23,8 +23,12 @@ t/09attribute+cache.t
 t/09attribute.t
 t/10tied_objects+cache.t
 t/10tied_objects.t
+t/11examples.t
+t/project_diff-6.2.txt
+t/project_diff-6.3.txt
 t/util.pm
 examples/ccm_consistent
+examples/count_objects_by_type
 examples/find_parallel_versions
 examples/find_parallel_versions2
 examples/grep_attr

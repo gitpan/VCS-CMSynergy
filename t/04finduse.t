@@ -122,7 +122,7 @@ my $old_format = $ccm->set("Object_format", "%objectname");
 my $fu_got = $ccm->finduse(map { $_->{objectname} } @$q_expected);
 verbose('fu_got', $fu_got);
 $ccm->set("Object_format", $old_format);
-isa_ok($fu_got, "ARRAY", q[$ccm->finduse()]);
+isa_ok($fu_got, "ARRAY", q[finduse()]);
 all_ok { UNIVERSAL::isa($_, "ARRAY") 
          && @$_ == 2 && 
 	 UNIVERSAL::isa($_->[1], "HASH") } $fu_got,
@@ -130,7 +130,7 @@ all_ok { UNIVERSAL::isa($_, "ARRAY")
 ok(eq_array(		# eq_set doesn't properly cope with refs
    [ sort { $a->[0] cmp $b->[0] } @$fu_got ], 
    [ sort { $a->[0] cmp $b->[0] } map { [ $_->{objectname}, $_->{finduse} ] } @$q_expected ]),
-   q[$ccm->finduse(...)]);
+   q[finduse(): expected results]);
 
 is($ccm->findpath("main.c-1:csrc:3", "guilib-darcy:project:1"),
    unix2native("guilib/sources/main.c"),

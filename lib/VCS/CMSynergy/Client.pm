@@ -1,7 +1,6 @@
 package VCS::CMSynergy::Client;
 
-our $VERSION = '@VERSION@';
-# %version: 1.18 %
+our $VERSION = sprintf("%d.%02d", q%version: 1.20 % =~ /(\d+)\.(\d+)/);
 
 =head1 NAME
 
@@ -34,9 +33,7 @@ use Carp;
 use Config;
 use Cwd;
 use File::Spec;
-use IPC::Open3;
-use POSIX qw(_exit);
-use Time::HiRes qw(gettimeofday tv_interval);
+use IPC::Run3;
 
 # Unix only
 use IO::Handle;
@@ -88,7 +85,6 @@ our %new_opts =
 sub new
 {
     my ($class, %args) = @_;
-    $class = ref $class if ref $class;
 
     my $self = 
     {
@@ -121,6 +117,24 @@ sub new
 }
 
 
+sub memoize_method 
+{
+    my ($class, $method, $slot) = @_;
+    $slot ||= $method;
+
+    no strict 'refs';
+    no warnings 'redefine';
+    my $name = $class . '::' . $method;
+    my $coderef = *{$name}{CODE};
+    *{$name} = sub 
+    {
+	my $self = shift;
+	$self->{$slot} = &$coderef($self, @_) unless exists $self->{$slot};
+	return $self->{$slot};
+    };
+}
+
+
 sub start
 {
     my ($this, %args) = @_;
@@ -130,10 +144,7 @@ sub start
 }
 
 
-sub default
-{
-    $Default ||= shift->new();			# CCM_HOME from environment
-}
+sub default	{ $Default ||= shift->new(); }
 
 
 sub ccm						# class/instance method
@@ -158,7 +169,7 @@ sub _ccm
     $Ccm_command = $this->{ccm_command} = join(" ", $cmd, @args);
 
     my ($rc, $out, $err);
-    my $t0 = [ gettimeofday() ];
+    my $t0 = $Debug && [ Time::HiRes::gettimeofday() ];
 
     CCM:
     {
@@ -224,7 +235,7 @@ sub _ccm
 
     if ($Debug)
     {
-	my $elapsed = sprintf("%.2f", tv_interval($t0));
+	my $elapsed = sprintf("%.2f", Time::HiRes::tv_interval($t0));
 	if ($Debug > 8)
 	{
 	    $this->trace_msg("<- ccm($this->{ccm_command})\n");
@@ -281,186 +292,41 @@ sub _kill_coprocess
 # helper: execute a program with CM Synergy environment set up appropriately
 sub exec
 {
-    my ($this, $prog, @args) = @_;
+    my ($this, @cmd) = @_;
     $this = __PACKAGE__->default unless ref $this;
 
-    local (*NULL);			
-    open(NULL, File::Spec->devnull) or die "can't open /dev/null: $!";
-    # NOTE: NULL will be closed (in parent) by open3
+    local @ENV{keys %{ $this->{env} }} = values %{ $this->{env} };
 
-    # NOTE: On operating systems with a broken "fflush(NULL)"
-    # (e.g. Solaris), Perl does _not_ flush all open file handles
-    # before a fork() (called by open3() below). Hence the user
-    # might see "double output". The workaround below does not
-    # completely solve the problem, but at least we can explicitly
-    # flush all file handles we know about (STDOUT, STDERR and $Debugfh).
-    unless ($Config{fflushNULL})
-    {
-	STDOUT->flush;
-	STDERR->flush;
-	$Debugfh->flush if defined $Debugfh;
-    }
+    my ($out, $err);
 
-    my ($outfh, $errfh, $pid);
-    if ($^O eq 'MSWin32')
-    {
-	# NOTE: On Win32, `exec LIST´ (as called by open3) will mung
-	# the LIST elements, e.g. an element with embedded blanks
-	# will result in two or more arguments passed to the
-	# exec'ed program, an embedded '>' will result in IO
-	# redirection. This is a bug and may be fixed in Perl
-	# versions later than 5.6.1 (cf. Changelog entries
-	# #12563 and #12559). It may also depends on the Windosw version. 
-        # The workaround below fixes blanks, redirectors and embedded 
-        # double quotes, but doesn't help for substrings like "%path%"
-	# where the Windows shell does variable substitution even
-	# when inside double quotes.
-	foreach (@args)
-	{
-	    if (/[\s<|>"]/) { s/"/\\"/g; $_ = "\"$_\""; } 
-	}
-    }
-    else
-    {
-	# NOTE: When open3 below is called with $outfh and $errfh undefined
-	#       open3 will generate and assign filehandles, but
-	#       it will assign the _same_ filehandle to $outfh and $errfh.
-	$outfh = IO::Handle->new;
-	$errfh = IO::Handle->new;
-    }
+    run3(\@cmd, \undef, \$out, \$err, 
+	 { binmode_stdout => 0, binmode_stderr => 1 });
 
-    # Disable possible outer SIGCHLD handler.
-    # FIXME: add NOTE why we do this (SIGCHLD problems eg wrt RPC::PlServer)
-    # FIXME: does this work on MSWin32?
-    my $outer_sigchld_handler = $SIG{CHLD};
-    {
-	# Shut up "Use of uninitialized value in scalar assignment"
-	# warnings (%SIG seems to be a special case here).
-	no warnings qw(uninitialized);
-	$SIG{CHLD} = undef;
-    }
- 
-    eval 
-    {
-	# NOTE: 
-	# (1) in case of failure, open3 die()s with $@ =~ /^open3:/
-	# (2) if the exec fails in the child forked by open3,
-	# 	  the child will die(); however, in this case we don't want
-	# 	  the child to run END blocks or DESTROYs (esp. since this would
-	# 	  `ccm stop' all sessions); the __DIE__ handler (inherited 
-	# 	  by the child) suppresses this by calling POSIX::_exit
-	# (3) since open3 may also die() in the parent, let
-	#	  this die simply proceed in __DIE__ handler
-	my $ppid = $$;
-	local $SIG{__DIE__} = sub { 
-	    return if $$ eq $ppid;	
-	    print STDERR $_[0]; 
-	    POSIX::_exit(255); 
-	};
-	local @ENV{keys %{ $this->{env} }} = values %{ $this->{env} };
-	$pid = open3("<&NULL", $outfh, $errfh, $prog, @args);
-    };
-    return _error($@) if $@;
-
-    my ($rc, $out, $err) = (undef, "", "");
-    if (is_win32)
-    {
-	# select() does not work on pipes in Win32,
-	# hence IO::Select below is useless. In this case STDOUT and
-	# STDERR of the child are connected to the same file handle
-	# (since $outfh and $errfh were undefined when calling open3),
-	# so we simply read $outfh until eof.
-	local $/ = undef;
-	$out = <$outfh>;
-	close($outfh);
-	$out = "" unless defined $out;
-    }
-    else
-    {
-	my $sel = IO::Select->new($outfh, $errfh);
-	my $buf;
-	while(my @ready = $sel->can_read())
-	{
-	    foreach my $fh (@ready)
-	    {
-		if ($fh->sysread($buf, 2048))
-		{
-		    no warnings qw(uninitialized);
-		    $fh eq $outfh ? $out : $err .= $buf;
-		}
-		else
-		{
-		    # NOTE: remove handle BEFORE closing it:
-		    # membership in $sel is actually based on fileno;
-		    # if we close $fh before removal its fileno is gone;
-		    # hence removal is a noop; this leaves an invalid 
-		    # file descriptor in the select set which causes the whole
-		    # can_read loop to exit prematurely
-		    $sel->remove($fh);	
-		    $fh->close;
-		}
-	    }
-	}
-    }
-
-    return _error("waitpid returned unexpected value")
-	if waitpid($pid, 0) != $pid;
-    $rc = $?;
-    if (my $sig = $rc & 127)
+    if (my $sig = $? & 127)
     {
 	($out, $err) = ("", "Killed by signal $sig");
-	$err .= " (core dumped)" if $rc & 128;
+	$err .= " (core dumped)" if $? & 128;
     }
-
-    # on Windows, treat output as if read in "text" mode
-    $out =~ s/\015\012/\012/g if is_win32;
-
-    chomp($out, $err);
-
-    for ($outer_sigchld_handler)
+    else
     {
-	# Re-establish outer SIGCHLD handler.
-	{
-	    no warnings qw(uninitialized);	# cf. above
-	    $SIG{CHLD} = $_;
-	}
-
-	# SIG_DFL: nothing to do
-	last if !defined $_ || $_ eq '' || $_ eq 'DEFAULT';
-
-	# SIG_IGN: nothing to do (FIXME: must I reap all zombies?)
-	last if $_ eq 'IGNORE';
-
-	# "Real" (sub) handler (may be denoted by various means).
-	# Call it explicitly, as child processes (other than $pid)
-	# might have died since we diabled it (there will be no signal
-	# emitted a posteriori for these zombies).
-	
-	# string (handler's name) or type glob: call it
-	&$_("CHLD"), last unless ref $_; 
-	
-	# sub ref: call it
-	&$_("CHLD"), last if ref $_ eq 'CODE';	
-	
-	carp(__PACKAGE__ . " exec: don't know how to call SIGCHLD handler of type " . ref $_);
+	chomp($out, $err);
     }
 
-    return ($rc, $out, $err);
+    return ($?, $out, $err);
 }
 
 # helper: return pathname to ccm executable
 sub ccm_exe
 {
-    my $self = shift;
-    return $self->{ccm_exe} ||= 
-	File::Spec->catfile($self->ccm_home, "bin", "ccm$Config{_exe}");
+    return File::Spec->catfile(shift->ccm_home, "bin", "ccm$Config{_exe}");
 }
+__PACKAGE__->memoize_method('ccm_exe');
 
 # helper: inverse function of POSIX::WEXITSTATUS()
-sub _exitstatus { return $_[0] << 8; }
+sub _exitstatus	{ return $_[0] << 8; }
 
 # helper: return a triple ($rc, $out, $err)
-sub _error { return (_exitstatus(255), "", $_[0]) }
+sub _error	{ return (_exitstatus(255), "", $_[0]) }
 
 # helper: check usage
 # check min ($minargs) and max ($maxargs) number of arguments 
@@ -514,31 +380,34 @@ sub version					# class/instance method
     my $this = shift;
     $this = __PACKAGE__->default unless ref $this;
 
-    our %Version;				# cache by CCM_HOME
-    my $ccm_home = $this->ccm_home;
-    unless (exists $Version{$ccm_home})
-    {
-        # "version" is not a recognized "interactive" command
-	local $this->{coprocess} = undef;
-
-	my ($rc, $out, $err) = $this->_ccm(0, qw(version -all));
-	return $this->set_error($err || $out) unless $rc == 0;
-
-	my %version;
-	my $cmsynergy_rx = qr/(?:Continuus|CM Synergy)/;
-	($version{cmsynergy}) = $out =~ /^$cmsynergy_rx Version\s+(\S*)$/imo;
-	($version{short}) = $version{cmsynergy} =~ /^(\d+\.\d+)/;
-	
-	($version{schema}) = $out =~ /^$cmsynergy_rx Schema Version\s+(.*)$/imo;
-	($version{informix}) = $out =~ /^Informix.* Version\s+(.*)$/imo;
-	$version{patches} = [ split(/\n/, $1) ]
-	    if $out =~ /^$cmsynergy_rx Patch Version\s+(.*?)(?:\Z|^$cmsynergy_rx|^Informix)/imso; 
-	$Version{$ccm_home} = \%version;
-    }
-
-    return $Version{$ccm_home}->{short} unless wantarray;
-    return @{ $Version{$ccm_home} }{qw(cmsynergy schema informix patches)};
+    my $version = $this->_version;
+    return @$version{qw(cmsynergy schema informix patches)} if wantarray;
+    return $version->{short};
 }
+
+sub _version
+{
+    my $this = shift;
+
+    # "version" is not a recognized "interactive" command
+    local $this->{coprocess} = undef;
+
+    my ($rc, $out, $err) = $this->_ccm(0, qw(version -all));
+    return $this->set_error($err || $out) unless $rc == 0;
+
+    my %version;
+    my $cmsynergy_rx = qr/(?:Continuus|CM Synergy)/;
+    ($version{cmsynergy}) = $out =~ /^$cmsynergy_rx Version\s+(\S*)$/imo;
+    ($version{short}) = $version{cmsynergy} =~ /^(\d+\.\d+)/;
+    
+    ($version{schema}) = $out =~ /^$cmsynergy_rx Schema Version\s+(.*)$/imo;
+    ($version{informix}) = $out =~ /^Informix.* Version\s+(.*)$/imo;
+    $version{patches} = [ split(/\n/, $1) ]
+	if $out =~ /^$cmsynergy_rx Patch Version\s+(.*?)(?:\Z|^$cmsynergy_rx|^Informix)/imso; 
+    return \%version;
+}
+__PACKAGE__->memoize_method('_version', 'version');
+
 
 sub ps	
 {
@@ -548,27 +417,7 @@ sub ps
     # "ps" is not a recognized "interactive" command
     local $this->{coprocess} = undef;
 
-    my @pscmd = qw(ps);
-    if (@filter)
-    {
-	# Pass the first "field => value" on to `ccm ps´, since 
-	# `ccm ps -field value' is usually significantly faster
-	# than `ccm ps'.
-
-	# NOTE [DEPRECATE 4.5]: `ccm ps -rfc_address ADDRESS' does not work
-	# correctly in Continuus 4.5: it only finds processes
-	# if the host part of ADDRESS is given as an IP address (i.e.
-	# _not_ as a DNS name) - though `ccm ps' shows rfc addresses 
-	# using names (at least if a reverse lookup on the address succeeds).
-	# Esp. `ccm ps -rfc_address $CCM_ADDR' will not work in most cases.
-	unless ($filter[0] eq 'rfc_address' && $this->version < 5.0)
-	{
-	    push @pscmd, "-$filter[0]", $filter[1];
-	    splice(@filter, 0, 2);
-	}
-    }
-
-    my ($rc, $out, $err) = $this->_ccm(0, @pscmd);
+    my ($rc, $out, $err) = $this->_ccm(0, ps => @filter);
     return $this->set_error($err || $out) unless $rc == 0;
 
     my @ps = ();
@@ -595,11 +444,6 @@ sub ps
 	}
     }
 
-    while (my ($field, $value) = splice(@filter, 0, 2))
-    {
-	@ps = grep { $_->{$field} eq $value } @ps;
-    }
-
     return \@ps;
 }
 
@@ -615,27 +459,26 @@ sub status
     my (@sessions, $session, $user);
     foreach (split(/\n/, $out))
     {
-	if (/sessions for user (\S+):/)
+	if (/sessions for user (\S+):/i)
 	{
 	    $user = $1;
 	    next;
 	}
-	if (/^(Graphical|Command) Interface \@ (\S+)( \(current session\))?/)
+	if (/^(graphical|command) interface \@ (\S+)/i)
 	{
 	    $session = { 
 		rfc_address	=> $2,
-		process		=> $1 eq "Graphical" ? "gui_interface" : "cmd_interface",
+		process		=> $1 =~ /graphical/i ? "gui_interface" : "cmd_interface",
 		user		=> $user,
-		current		=> defined $3,
 	    };
 	    push @sessions, $session;
 	    next;
 	}
-	if (/^Database: (.*)/ && $session)
+	if (/^database: (.*)/i && $session)
 	{
 	    # sanitize database path (all other CM Synergy information commands
 	    # show it with trailing "/db", so we standardize on that)
-	    # NOTE: carefull here, because the database might reside on NT
+	    # NOTE: carefull here, because the database might reside on Windows
 	    ($session->{database} = $1) 		
 		=~ s{^(.)(.*?)(\1db)?$}{$1$2$1db};
 	    next;
@@ -691,7 +534,10 @@ sub trace
 {
     my ($this, $trace_level, $trace_filename) = @_;
     return $Debug unless defined $trace_level;
+
+    require Time::HiRes;
     ($Debug, $trace_level) = ($trace_level, $Debug);
+
     if (@_ == 3)				# $trace_filename present
     {
 	# switch trace files
@@ -921,8 +767,7 @@ that the registrar as encountered during its lifetime.
 
 In the second form of invocation, you can pass pairs of field name
 and field value and C<ps> will only return processes whose fields
-match I<all> the corresponding values. Note that in contrast to the
-B<ccm ps> command, you can filter on multiple fields simultaneously.
+match I<all> the corresponding values.
 
 Here's an example of the value returned by C<ps> 
 as formatted by L<Data::Dumper>:
@@ -994,8 +839,6 @@ for that particular session.
 
 The available keys are a subset of the keys returned by the
 L</ps> method: C<rfc_address>, C<database>, C<user>, and C<process>.
-There is an additional key C<current> with a boolean value
-marking CM Synergy's notion of the I<current> session.
 
 Note: Unlike the output of the B<ccm status> command, the value
 for C<database> has a trailing C<"/db">. This makes it consistent
@@ -1008,23 +851,20 @@ as formatted by L<Data::Dumper>:
       {
 	'process' => 'gui_interface',
 	'database' => '/ccmdb/scm/support/db',
-	'current' => '1',
 	'rfc_address' => 'tiv01:53020:160.50.76.15',
-	'user' => 'qx06959'
+	'user' => 'rschupp'
       },
       {
 	'process' => 'gui_interface',
 	'database' => '/ccmdb/scm/support/db',
-	'current' => '',
 	'rfc_address' => 'wmuc111931:4661:160.50.136.201',
-	'user' => 'qx06959'
+	'user' => 'rschupp'
       },
       {
 	'process' => 'cmd_interface',
 	'database' => '/ccmdb/test/tut51/db',
-	'current' => '',
 	'rfc_address' => 'tiv01:53341:160.50.76.15',
-	'user' => 'qx06959'
+	'user' => 'rschupp'
       }
   ];
 

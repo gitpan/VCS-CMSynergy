@@ -6,11 +6,19 @@ grep_attr - grep attribute values of CM Synergy objects
 
 =head1 SYNOPSIS
 
-grep_attr [ccm_options] [options] attribute [pattern] [objectname...]
+grep_attr [options] [pattern | -f file] attribute [objectname... | -q query]
 
   attribute	name of CM Synergy attribute 
   pattern	Perl regular expression
   objectname	name of a CM Synergy object
+
+  Common options:
+
+  -D PATH | --database PATH       database path
+  -H HOST | --host HOST           engine host
+  -U NAME | --user NAME           user name
+  -P STRING | --password STRING   user's password
+  --ui_database_dir PATH          path to copy database information to
 
   Options:
 
@@ -24,15 +32,7 @@ grep_attr [ccm_options] [options] attribute [pattern] [objectname...]
   -F          interpret pattern(s) as fixed strings
 
   Either "pattern" or "-f file" must be supplied.
-  Either "objectname"(s) or "-q query" must be supplied.
-
-  CCM Options:
-
-  -D PATH | --database PATH       database path
-  -H HOST | --host HOST           engine host
-  -U NAME | --user NAME           user name
-  -P STRING | --password STRING   user's password
-  --ui_database_dir PATH          path to copy database information to
+  At least one "objectname" or "-q query" must be supplied.
 
 =head1 DESCRIPTION
 
@@ -52,10 +52,8 @@ matching lines for each object processed
 
 =item -f I<file>, --file=I<file>
 
-obtain patterns from I<file>, instead of from the second argument
-(which must be omitted when using this option);
-C<file> should contain one pattern per line which are considered
-alternatives for the search
+obtain patterns from I<file>, one pattern per line.
+Note that the second argument must be omitted when using this option.
 
 =item -h, --no-objectname
 
@@ -105,7 +103,7 @@ Roderich Schupp, argumentum GmbH <schupp@argumentum.de>
 
 use Getopt::Long qw(:config bundling);
 use Pod::Usage;
-use VCS::CMSynergy;
+use VCS::CMSynergy ':cached_attributes';
 use VCS::CMSynergy::Helper; 
 use strict;
 
@@ -123,12 +121,10 @@ GetOptions($opts,
     'i|ignore-case',		# case-insensitive search
     'l|objects-with-matches',	# print objectnames only
     'q|query=s',		# use query to determine objectnames
-#    'v|revert-match',		# show objetcnames that DON'T match
-    's|safe',			# safe (but slow) mode (with query)
+    's|safe',			# safe (but slow) mode (use with query)
     'F|fixed-strings',		# treat pattern as fixed strings
     ) or pod2usage(2);
 
-our $attribute = shift @ARGV or pod2usage(2);
 
 our $pattern;
 if (defined $opts->{f})
@@ -145,62 +141,54 @@ else
 }
 $pattern = "(?i:$pattern)" if $opts->{i};
 
+our $attribute = shift @ARGV or pod2usage(2);
+
 pod2usage(2) unless (defined $opts->{q} xor @ARGV);
 
+my $grep_status;
+END { $? = defined $grep_status ? $grep_status : 2; }
+
 our $re = qr/$pattern/;
-our $matches = 0;
+our $matching_objects = 0;
 
 my $ccm = VCS::CMSynergy->new(
     @ccm_opts,
     RaiseError	=> 1,
     PrintError	=> 0);
 
-if (defined $opts->{q} && !$opts->{s})
-{
-    foreach (@{ $ccm->query_arrayref($opts->{q}, 'objectname', $attribute) })
-    {
-	grep_attr($_->[0], $_->[1]) ;
-    }
-}
-else
-{
-    foreach (defined $opts->{q} ?
-	@{ $ccm->query_object($opts->{q}) } : @ARGV)
-    {
-	grep_attr($_, $ccm->get_attribute($attribute, $_));
-    }
-}
+my @objects =  map { $ccm->object($_) } @ARGV;
+push @objects,
+    @{ $opts->{s} ? 
+	$ccm->query_object($opts->{q}) :
+	$ccm->query_object_with_attributes($opts->{q}, $attribute) }
+    if defined $opts->{q};
 
-exit $matches ? 0 : 1;
+grep_attr($_, $_->get_attribute($attribute)) foreach @objects;
+
+$grep_status = $matching_objects ? 0 : 1;
 
 
 sub grep_attr($$)
 {
-    my ($objectname, $value) = @_;
+    my ($object, $value) = @_;
 
-    unless ($value =~ $re)
-    {
-	print "$objectname:0\n" if $opts->{c};
-	return;
-    }
-
-    $matches++;
+    my @matching_lines = grep { /$re/ } split(/\n/, $value);
+    $matching_objects++ if @matching_lines;
 
     if ($opts->{l}) 
     {
-	print "$objectname\n";
-	return;
+	print "$object\n" if @matching_lines;
     }
-
-    my @lines = grep { /$re/ } split(/\n/, $value);
     if ($opts->{c})
     {
-	printf("%s:%d\n", $objectname, int(@lines));
-	return;
+	print $object, ":", int(@matching_lines), "\n";
     }
-    foreach (@lines)
+    elsif ($opts->{h})
     {
-	print "$objectname:" unless $opts->{h};
-	print "$_\n";
+	print "$_\n" foreach @matching_lines;
+    }
+    else
+    {
+	print "$object:$_\n" foreach @matching_lines;
     }
 }

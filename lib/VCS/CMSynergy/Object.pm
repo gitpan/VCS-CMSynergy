@@ -1,6 +1,6 @@
 package VCS::CMSynergy::Object;
 
-# %version: 1.17 %
+our $VERSION = sprintf("%d.%02d", q%version: 1.19 % =~ /(\d+)\.(\d+)/);
 
 =head1 NAME
 
@@ -51,6 +51,7 @@ This synopsis only lists the major methods.
 
     
 use Carp;
+use VCS::CMSynergy::Client qw(_usage);
 
 use overload 
     '""'	=> \&objectname,
@@ -78,24 +79,37 @@ sub new
 	return undef;
     }
     my $class = shift;
+    my $ccm = shift;
 
-    my %hash;
-    @hash{qw(ccm name version cvtype instance)} = @_;
-    $hash{objectname} = $_[1] . $_[0]->delimiter . "$_[2]:$_[3]:$_[4]";
-    Scalar::Util::weaken($hash{ccm}) if $have_weaken;
-    $hash{acache} = {} if $VCS::CMSynergy::Use{cached_attributes};
+    my $objectname = $_[0] . $ccm->delimiter . "$_[1]:$_[2]:$_[3]";
+    return $ccm->{objects}->{$objectname} 
+	if VCS::CMSynergy::use_cached_attributes() && $ccm->{objects}->{$objectname};
 
-    if ($VCS::CMSynergy::Use{tied_objects})
+    my %fields;
+    @fields{qw(name version cvtype instance)} = @_;
+    $fields{objectname} = $objectname;
+    $fields{ccm} = $ccm;
+    Scalar::Util::weaken($fields{ccm}) if $have_weaken;
+    $fields{acache} = {} if VCS::CMSynergy::use_cached_attributes();
+
+    my $self;
+    if (VCS::CMSynergy::use_tied_objects())
     {
-	my $self = bless {}, $class;
-	tie %$self, 'VCS::CMSynergy::ObjectTieHash', \%hash;
-	return $self;
+	$self = bless {}, $class;
+	tie %$self, 'VCS::CMSynergy::ObjectTieHash', \%fields;
     }
     else
     {
-	return bless \%hash, $class;
+	$self = bless \%fields, $class;
     }
+    $ccm->{objects}->{$objectname} = $self if VCS::CMSynergy::use_cached_attributes();
+    return $self;
 }
+
+# convenience methods for frequently used tests
+sub is_dir	{ $_[0]->cvtype eq "dir"; }
+sub is_project	{ $_[0]->cvtype eq "project"; }
+
 
 # NOTE: All access to a VCS::CMSynergy::Objects data must either use
 # methods, e.g. "$self->foo", or use _private(), e.g. "$self->_private->{foo}".
@@ -107,39 +121,76 @@ sub new
 
 # access to private parts
 sub _private 	{ shift; }
-sub _acache 	{ shift->{acache}; }
 
 sub list_attributes
 {
     my ($self) = @_;
-    return _list_attributes_cached($self->_private);
+
+    my $private = $self->_private;
+    return $private->{attributes} ||= $private->{ccm}->list_attributes($private->{objectname});
 }
 
 sub get_attribute
 {
     my ($self, $attr_name) = @_;
-    return _get_attribute_cached($self->_private, $attr_name);
+
+    my $private = $self->_private;
+    return $private->{acache}->{$attr_name} 
+	if VCS::CMSynergy::use_cached_attributes() 
+	   && exists $private->{acache}->{$attr_name};
+
+    my $value = $private->{ccm}->get_attribute($attr_name, $private->{objectname});
+
+    if (VCS::CMSynergy::use_cached_attributes())
+    {
+	if (defined $value)
+	{
+	    $private->{acache}->{$attr_name} = $value;	# update cache
+	}
+	else
+	{
+	    delete $private->{acache}->{$attr_name};	# invalidate cache
+	}
+    }
+    return $value;
 }
 
 sub set_attribute
 {
     my ($self, $attr_name, $value) = @_;
-    return _set_attribute_cached($self->_private, $attr_name, $value);
+
+    my $private = $self->_private;
+    my $rc = $private->{ccm}->set_attribute($attr_name, $private->{objectname}, $value);
+
+    if (VCS::CMSynergy::use_cached_attributes())
+    {
+	if ($rc)
+	{
+	    $private->{acache}->{$attr_name} = $value;	# update cache
+	}
+	else
+	{
+	    delete $private->{acache}->{$attr_name};	# invalidate cache
+	}
+    }
+    return $rc;
 }
 
 sub create_attribute
 {
     my ($self, $attr_name, $type, $value) = @_;
+    _usage(4, undef, '$name, $type, $value', \@_);
     
     my $rc = $self->ccm->create_attribute($attr_name, $type, $value, $self);
 
     # update caches if necessary
     if ($rc)
     {
-	my $attributes = $self->list_attributes;
-	$attributes->{$attr_name} = $type;
-	$self->_acache->{$attr_name} = $value
-	    if $VCS::CMSynergy::Use{cached_attributes} && defined $value;
+	my $private = $self->_private;
+	$private->{attributes}->{$attr_name} = $type
+	    if $private->{attributes};
+	$private->{acache}->{$attr_name} = $value
+	    if VCS::CMSynergy::use_cached_attributes() && defined $value;
     }
     return $rc;
 }
@@ -147,22 +198,66 @@ sub create_attribute
 sub delete_attribute
 {
     my ($self, $attr_name) = @_;
+    _usage(2, undef, '$name', \@_);
 
     my $rc = $self->ccm->delete_attribute($attr_name, $self);
 
     # update caches if necessary
     if ($rc)
     {
-	my $attributes = $self->list_attributes;
-	delete $attributes->{$attr_name};
-	delete $self->_acache->{$attr_name}
-	    if $VCS::CMSynergy::Use{cached_attributes};
+	my $private = $self->_private;
+	delete $private->{attributes}->{$attr_name}
+	    if $private->{attributes};
+	delete $private->{acache}->{$attr_name}
+	    if VCS::CMSynergy::use_cached_attributes();
     }
     return $rc;
 }
 
-# NOTE: No copy_attribute (yet) - what should happen 
-# for $Use{cached_attributes}?
+sub copy_attribute
+{
+    my ($self, $names, @to_file_specs) = @_;
+    _usage(3, undef, '{ $name | \\@names }, $to_file_spec...', \@_);
+    # NOTE: no $flags allowed, because honouring them would need
+    # a project traversal to update or invalidate attribute caches
+
+    $names = [ $names ] unless UNIVERSAL::isa($names, 'ARRAY');
+
+    my $rc = $self->ccm->copy_attribute($names, [], $self, @to_file_specs);
+
+    if (VCS::CMSynergy::use_cached_attributes())
+    {
+	my @objects = grep { UNIVERSAL::isa($_, 'VCS::CMSynergy') } @to_file_specs;
+	my $acache = $self->_private->{acache};
+
+	foreach my $attr_name (@$names)
+	{
+	    if ($rc && exists $acache->{$attr_name})
+	    {
+		# if we already know the value of the copied attribute(s)
+		# and the copy was successful, update the targets' caches
+		$_->_private->{acache}->{$attr_name} = $acache->{$attr_name} foreach @objects;
+	    }
+	    else
+	    {
+		# in all other cases, invalidate the targets' caches
+		# (esp. in case of failure, since we can't know 
+		# which got actually updated)
+		delete $_->_private->{acache}->{$attr_name} foreach @objects;
+	    }
+	}
+    }
+
+    return $rc;
+}
+
+# test whether object exists (without causing an exception)
+sub exists
+{
+    my $self = shift;
+    my ($rc) = $self->ccm->_ccm(0, qw(attribute -show version), $self);
+    return $rc == 0;
+}
 
 sub property
 {
@@ -185,41 +280,6 @@ sub cvid
 }
 
 
-# non-method private subs
-
-sub _list_attributes_cached
-{
-    my ($hash) = @_;
-    return $hash->{attributes} ||= $hash->{ccm}->list_attributes($hash->{objectname});
-}
-
-sub _get_attribute_cached
-{
-    my ($hash, $attr_name) = @_;
-
-    return $hash->{ccm}->get_attribute($attr_name, $hash->{objectname}) 
-	unless $VCS::CMSynergy::Use{cached_attributes};
-
-    return $hash->{acache}->{$attr_name} 
-	if exists $hash->{acache}->{$attr_name};
-
-    my $value = $hash->{ccm}->get_attribute($attr_name, $hash->{objectname});
-    $hash->{acache}->{$attr_name} = $value if defined $value;
-    return $value;
-}
-
-sub _set_attribute_cached
-{
-    my ($hash, $attr_name, $value) = @_;
-
-    return $hash->{ccm}->set_attribute($attr_name, $hash->{objectname}, $value)
-	unless $VCS::CMSynergy::Use{cached_attributes};
-
-    $value = $hash->{ccm}->set_attribute($attr_name, $hash->{objectname}, $value);
-
-    $hash->{acache}->{$attr_name} = $value if defined $value;
-    return $value;
-}
 
 1;
 
@@ -262,8 +322,15 @@ separately.
 Usually you would not call this method directly, but rather
 via the wrapper L<VCS::CMSynergy/object>.
 
-Note that no check is made whether the specified object really exists
-in the iCM synergy database.
+Note that no check is made whether the corresponding object really exists
+in the CM synergy database, use L</exists> for that.
+
+If you are C<use>ing L<VCS::CMSynergy/:cached_attributes>, 
+invoking C<new> several times with the same objectname
+always returns the I<same> C<VCS::CMSynergy::Object>. This also holds
+for any method that returns C<VCS::CMSynergy::Object>s
+(by calling C<new> implicitly), e.g. L<VCS::CMSynergy/object> or
+L<VCS::CMSynergy/query_object>.
 
 =head2 objectname 
 
@@ -328,6 +395,19 @@ Convenience wrappers for L<VCS::CMSynergy/create_attribute> and
 L<VCS::CMSynergy/delete_attribute>, resp. Also update the cache
 when L<VCS::CMSynergy/:cached_attributes> is in effect.
 
+=head2 copy_attribute
+
+  $obj->copy_attribute($attribute_name, @to_file_specs);
+
+Convenience wrapper for L<VCS::CMSynergy/copy_attribute>.
+Also invalidate the cache entries for C<$attribute_name> for all
+C<VCS::CMSynergy::Object>s in C<@to_file_specs>
+when L<VCS::CMSynergy/:cached_attributes> is in effect.
+
+Note: The optional C<$flags> parameter of L<VCS::CMSynergy/copy_attribute> is
+not supoorted, because it would mean traversing the target projects
+to update or invalidate attribute caches.
+
 =head2 list_attributes
 
   $hashref = $obj->list_attributes;
@@ -337,6 +417,13 @@ Convenience wrapper for L<VCS::CMSynergy/list_attributes>.
 Note that the returned hash is always cached in the object
 (and updated for successful L</create_attribute> and 
 L</delete_attribute> calls).
+
+=head2 exists
+
+  print "$obj doesn't exist" unless $obj->exists;
+
+Tests whether the C<VCS::CMSynergy::Object> corresponds to an object
+in the CM Synergy database (without causing an exception if it doesn't).
 
 =head1 PROPERTY METHODS
 

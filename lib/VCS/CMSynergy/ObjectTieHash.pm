@@ -1,5 +1,7 @@
 package VCS::CMSynergy::ObjectTieHash;
 
+use base 'VCS::CMSynergy::Object';
+
 # TIEHASH(class, { ccm => ..., name => ..., ...})
 sub TIEHASH
 {
@@ -10,26 +12,26 @@ sub TIEHASH
 sub FETCH
 {
     my ($self, $key) = @_;
-    return VCS::CMSynergy::Object::_get_attribute_cached($self, $key);
+    return $self->get_attribute($key);
 }
 
 sub STORE
 {
     my ($self, $key, $value) = @_;
-    return VCS::CMSynergy::Object::_set_attribute_cached($self, $key, $value);
+    return $self->set_attribute($key, $value);
 }
 
 sub EXISTS
 {
     my ($self, $key) = @_;
-    my $attributes = VCS::CMSynergy::Object::_list_attributes_cached($self);
+    my $attributes = $self->list_attributes;
     return exists $attributes->{$key};
 }
 
 sub FIRSTKEY
 {
     my ($self) = @_;
-    my $attributes = VCS::CMSynergy::Object::_list_attributes_cached($self);
+    my $attributes = $self->list_attributes;
     my $dummy = keys %$attributes;		# reset each() iterator
     return each %$attributes;
 }
@@ -37,7 +39,7 @@ sub FIRSTKEY
 sub NEXTKEY
 {
     my ($self, $lastkey) = @_;
-    my $attributes = VCS::CMSynergy::Object::_list_attributes_cached($self);
+    my $attributes = $self->list_attributes;
     return each %$attributes;
 }
 
@@ -51,12 +53,13 @@ sub NEXTKEY
 
     foreach my $method (qw(objectname ccm name version cvtype instance))
     {
-	*{$method} = sub { my $self = shift; (tied %$self)->{$method}; };
+	*{$method} = sub { my $self = shift; (tied %$self || $self)->{$method}; };
     }
 
     # access private parts via the tied object
-    sub _private	{ my $self = shift; tied %$self; }
-    sub _acache		{ my $self = shift; (tied %$self)->{acache}; }
+    # FIXME NOTE why the || below? because in FETCH etc we are NOT tied
+    # but otherwise we ARE
+    sub _private	{ my $self = shift; tied %$self || $self; }
 }
 
 
