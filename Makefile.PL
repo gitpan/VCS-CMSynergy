@@ -2,7 +2,8 @@ use ExtUtils::MakeMaker;
 
 WriteMakefile(
     NAME		=> 'VCS::CMSynergy',
-    VERSION_FROM	=> 'VCS/CMSynergy.pm',
+    AUTHOR		=> 'Roderich Schupp <schupp@argumentum.de>',
+    VERSION_FROM	=> 'CMSynergy.pm',
     PREREQ_PM		=> {
     #			     'Expect'		=> '1.15',
 			     'File::Spec'	=> 0,

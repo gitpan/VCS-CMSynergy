@@ -1,6 +1,6 @@
 package VCS::CMSynergy;
 
-our $VERSION = sprintf("%d.%02d", q%version: 1.05 % =~ /(\d+)\.(\d+)/);
+our $VERSION = sprintf("%d.%02d", q%version: 1.06 % =~ /(\d+)\.(\d+)/);
 
 =head1 NAME
 

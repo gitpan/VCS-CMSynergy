@@ -1,5 +1,5 @@
-VCS/CMSynergy.pm
-VCS/CMSynergy/Users.pm
+CMSynergy.pm
+CMSynergy/Users.pm
 Makefile.PL
 MANIFEST
 README

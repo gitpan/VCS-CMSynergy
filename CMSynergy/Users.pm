@@ -37,8 +37,6 @@ NOTE: This interface is subject to change.
 
 package VCS::CMSynergy;
 
-use VCS::CMSynergy;
-
 =item users
 
   $hash_ref = $ccm->users;
@@ -221,5 +219,7 @@ sub get_roles
 
     return @{ $users->{$user} };
 }
+
+=back
 
 1;
