@@ -1,10 +1,15 @@
 #!/usr/bin/perl -w
 
-use Test::More tests => 27;
+use Test::More tests => 17;
 use t::util;
+use strict;
+
+BEGIN { use_ok('VCS::CMSynergy'); }
+
 use Cwd;
 use File::Path;
 use File::Spec;
+use File::Temp qw(tempdir);
 
 BEGIN
 {
@@ -15,45 +20,46 @@ BEGIN
 }
 
 my @cleanup;			# cleanup actions
+END { &{ pop @cleanup } while @cleanup; }
 
-END
-{
-    &{ pop @cleanup } while @cleanup;
-}
-
-
-my $ccm = VCS::CMSynergy->new(%test_session);
+my $ccm = VCS::CMSynergy->new(%::test_session);
 isa_ok($ccm, "VCS::CMSynergy");
 diag("using coprocess") if defined $ccm->{coprocess};
 
-# make sure there are no remnants from previous tests
-rmtree("calculator-test", 0, 0);
+my $pname = "calculator";
+my $pversion = "test$$";
+my $tempdir = tempdir(CLEANUP => 1);
+my $pwd = getcwd;
+my $result = $ccm->query_object(
+    qq[type='project' and name='$pname' and version match 'test*']);
+ok(@$result == 0, qq[test project ${pname}-test* does not exist yet]);
 
-my $pwd = getcwd();
-$pwd = fullwin32path($pwd) if $^O eq 'cygwin';
+ok($ccm->checkout(-project => "${pname}-1.0", "-copy_based", 
+                  -to => $pversion, -path => $tempdir),
+    qq[checkout project ${pname}-1.0 to $pversion]);
+$result = $ccm->query_object({ type => 'project', name => $pname, version => $pversion });
+ok(@$result == 1, qq[test project ${pname}-${pversion} has been created]);
 
-my $test = "test$$";
-my $proj = "calculator" . $ccm->delimiter . $test;
-ok($ccm->checkout(qw/-project calculator-1.0 -copy_based/, -to => $test, -path => $pwd),
-   qq[checkout project calculator-1.0 to $proj]);
+my ($proj) = @$result;
+my $wa_path = $ccm->get_attribute(wa_path => $proj);
+ok(index($wa_path, $tempdir) == 0, qq[wa_path "$wa_path" is below checkout path "$tempdir"]);
 push @cleanup, sub
 {
-    ok($ccm->delete(-project => $proj), qq[delete project $proj]);
-    ok(! -d $proj, q[project directory has been deleted]);
+    chdir($pwd);
+    ok($ccm->delete(-project => $proj), qq[test project $proj has been deleted]);
+    ok(! -d $wa_path, q[test project workarea has been deleted]);
 };
 
 my $ccmwaid = File::Spec->catfile(
-    $proj,  "calculator",
-    $VCS::CMSynergy::Is_MSWin32 ? "_ccmwaid.inf" : ".ccmwaid.inf");
-ok(-e $ccmwaid, qq[check for ccmwaid file ($ccmwaid)]);
+    $wa_path, $pname,
+    VCS::CMSynergy::Client::is_win32 ? "_ccmwaid.inf" : ".ccmwaid.inf");
+ok(-e $ccmwaid, qq[check for ccmwaid file ($ccmwaid) below wa_path]);
 
 # chdir to project sub directory (esp. for testing coprocess)
-ok(chdir(File::Spec->catdir($proj, qw(calculator sources))), 
-   q[chdir to project sub directory (sources)]);
-push @cleanup, sub { chdir($pwd) };
+ok(chdir(File::Spec->catdir($wa_path, $pname, "sources")), 
+   q[chdir to project sub directory "sources"]);
 
 my $file = "clear.c";
-
 ok(-e $file, qq[file $file exists]);
 ok(! -w $file, qq[file $file is read-only]);
 
@@ -67,59 +73,9 @@ push @cleanup, sub
 {
     ok($ccm->delete(-replace => $file), qq[delete and replace $file]);
 };
-ok(-w $file, qq[file $file is writable]);
+ok(-w $file, qq[file $file is now writable]);
 is($ccm->get_attribute(status => $file), "working", 
     q[checked out file is "working"]);
-
-# test set_attribute with different values
-my $value;
-
-$value = "the quick brown fox jumps over the lazy dog";
-ok($ccm->set_attribute(comment => $file, $value),
-    q[set_attribute to simple string]);
-is($ccm->get_attribute(comment => $file), $value,
-    q[re-get_attribute and compare]);
-
-$value = join("-" x 10, 1..100);
-ok($ccm->set_attribute(comment => $file, $value),
-    q[set_attribute to long string]);
-is($ccm->get_attribute(comment => $file), $value,
-    q[re-get_attribute and compare]);
-
-$value = join("\n", 1..10);
-ok($ccm->set_attribute(comment => $file, $value),
-    q[set_attribute to string with newlines]);
-is($ccm->get_attribute(comment => $file), $value,
-    q[re-get_attribute and compare]);
-
-$value = join(" ", map { qq["$_"] } 1..10);
-ok($ccm->set_attribute(comment => $file, $value),
-    q[set_attribute to string with embedded quotes]);
-is($ccm->get_attribute(comment => $file), $value,
-    q[re-get_attribute and compare]);
-
-my ($object) = @{ $ccm->ls_object($file) };
-isa_ok($object, "VCS::CMSynergy::Object");
-
-my $displayname = $ccm->property(displayname => $file);
-is($displayname, $object->name . $ccm->delimiter . $object->version,
-    q[check for expected displayname]);
-
-SKIP: 
-{
-    skip "no tied hash interface to VCS::CMSynergy::Object", 4 
-	unless tied %$object;
-
-    is($object->{status}, "working", q[FETCH attribute]);
-    $value = "set via tied hash interface";
-    $object->{comment} = $value;
-    is($object->{comment}, $value, q[re-FETCH attribute and compare]);
-    is($object->displayname, $displayname, q[check displayname()]);
-
-    my @attrs1 = keys %{ $ccm->list_attributes($object) };
-    my @attrs2 = keys %$object;
-    ok(eq_array(\@attrs1, \@attrs2), q[check list of attributes]);
-}
 
 exit 0;
 

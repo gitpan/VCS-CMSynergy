@@ -22,7 +22,7 @@ die qq{
 } unless -x $ccm_exe || ($^O eq 'cygwin' && -e $ccm_exe);
 # NOTE: -x $ccm_exe fails on cygwin
 
-my $ccm_version = qx($ccm_exe version);
+my $ccm_version = qx("$ccm_exe" version);
 die qq{  
   The CM Synergy CLI programm ($ccm_exe)
   doesn't appear to work on this machine. 
@@ -34,9 +34,13 @@ $ccm_version =~ /^(?:Continuus|CM Synergy) Version\s+(\d+\.\d+)/i;
 print "Detected CM Synergy version $1\n";
 
 warn qq{
-  The tied hash interface for VCS::CMSynergy::Object is only available
-  when Scalar::Util is installed and implements "weaken".
-} unless eval { require Scalar::Util; import Scalar::Util qw(weaken); 1 };
+  Please install module Scalar::Util and make sure it implements weaken().
+  Without weaken(), CM Synergy session might not be stopped as soon
+  as the corresponding VCS::CMSynergy object goes out of scope
+  (but not that all sessions will be stopped when perl exits anyway). 
+  Cf. "Why is Scalar::Util recommended?" in the POD for 
+  VCS::CMSynergy::Object.pm for details.
+} unless (eval "use Scalar::Util qw(weaken); 1");
 
 
 # --- Create Makefile
@@ -45,23 +49,27 @@ my %prereq =
 (
     'File::Spec'		=> 0,
     'File::Temp'		=> 0,
+    'Time::HiRes'		=> 0,
     'Test::More'		=> 0,	 	# for `make test' only
 );
 $prereq{'Filesys::CygwinPaths'} = 0 if $^O eq 'cygwin';
 
 WriteMakefile(
-    NAME	=> 'VCS::CMSynergy',
-    AUTHOR	=> 'Roderich Schupp <schupp@argumentum.de>',
-    VERSION_FROM => 'lib/VCS/CMSynergy.pm',
-    PREREQ_PM	=> \%prereq,
-    dist	=> { 
+    NAME		=> 'VCS::CMSynergy',
+    AUTHOR		=> 'Roderich Schupp <schupp@argumentum.de>',
+    VERSION_FROM	=> 'VERSION',
+    PM_FILTER		=> q[$(PERL) -np -e \\"s:\\@VERSION\\@:$(VERSION):g\\"],
+    PREREQ_PM		=> \%prereq,
+    dist		=> { 
 	COMPRESS	=> 'gzip -9f', 
 	SUFFIX		=> 'gz' 
     },
-    realclean	=> { FILES		=> 't/zz_*.t' },
+    realclean		=> { FILES => 't/zz_*.t' },
 );
 
-sub MY::postamble
+package MY;
+
+sub postamble
 {
     my $self = shift;
 
@@ -87,16 +95,16 @@ sub MY::postamble
 	print ZZ "exit 0;\n";
 	close ZZ or warn "Error writing $zz_test: $!";
     }
-
     return;
 }
 
-sub MY::post_initialize
+sub post_initialize
 {
     my $self = shift;
 
     # don't install Changes.pod as man page
     delete $self->{MAN3PODS}->{'lib/VCS/CMSynergy/Changes.pod'};
 
-    return;
+    # NOTE: ActiveState build 806 for Win32 doesn't honor PM_FILTER
+    return "PM_FILTER = $self->{PM_FILTER}\n";
 }

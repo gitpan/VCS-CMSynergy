@@ -1,0 +1,1 @@
+$VERSION = sprintf("%d.%02d", q%version: 1.18 % =~ /(\d+)\.(\d+)/);

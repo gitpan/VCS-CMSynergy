@@ -1,5 +1,6 @@
 lib/VCS/CMSynergy.pm
 lib/VCS/CMSynergy/Client.pm
+lib/VCS/CMSynergy/Helper.pm
 lib/VCS/CMSynergy/Object.pm
 lib/VCS/CMSynergy/ObjectTieHash.pm
 lib/VCS/CMSynergy/Users.pm
@@ -7,7 +8,9 @@ lib/VCS/CMSynergy/update_users.pm
 lib/VCS/CMSynergy/Changes.pod
 Makefile.PL
 MANIFEST
+META.yml
 README
+VERSION
 t/01session.t
 t/02autoload.t
 t/03query.t
@@ -16,9 +19,15 @@ t/05history.t
 t/06misc.t
 t/07workarea.t
 t/08error.t
+t/09attribute+cache.t
+t/09attribute.t
+t/10tied_objects+cache.t
+t/10tied_objects.t
 t/util.pm
-examples/find_parallel_versions2
-examples/find_parallel_versions
-examples/hierarchy_project_members
 examples/ccm_consistent
+examples/find_parallel_versions
+examples/find_parallel_versions2
 examples/grep_attr
+examples/hierarchy_project_members
+examples/project_diff
+examples/project_tree

@@ -1,4 +1,4 @@
-#/usr/bin/perl -w
+#!/usr/bin/perl -w
 
 use VCS::CMSynergy;
 use strict;
@@ -27,14 +27,14 @@ foreach my $p (keys %projects)
 	{ is_member_of => $p }, 
 	qw(name cvtype instance version platform reltype)) })
     {
-	my $object = join(":", @$_{qw(name cvtype instance)});
+	my $pedigree = join(":", @$_{qw(name cvtype instance)});
 	$_->{project} = $p;
-	push @{ $members{$object} }, $_;
+	push @{ $members{$pedigree} }, $_;
     }
 }
 
 my $inconsistent = 0;
-while (my ($object, $versions = each %members)
+while (my ($pedigree, $versions) = each %members)
 {
     next if @$versions == 1;
    

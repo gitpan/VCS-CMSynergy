@@ -1,0 +1,199 @@
+#!/usr/bin/perl -w
+
+=head1 NAME
+
+project_diff - show differences between to projects (based on workarea paths)
+
+=head1 SYNOPSIS
+
+project_diff [ccm_options] [options] project1 project2
+
+  projectN    project specs, either in the form "proj_vers"
+              or as four part objectname
+
+  Options:
+
+  -d          produce diff listing
+  -r          recurse into sub projects
+  -v          verbose progress output
+
+  CCM Options:
+
+  -D PATH | --database PATH       database path
+  -H HOST | --host HOST           engine host
+  -U NAME | --user NAME           user name
+  -P STRING | --password STRING   user's password
+  --ui_database_dir PATH          path to copy database information to
+
+=head1 DESCRIPTION
+
+project_diff traverses both projects and outputs the differences in the
+following form:
+
+  ! toolkit/editor/sources/main.c main.c-1:csrc:2 main.c-2:csrc:2
+  + toolkit/guilib/includes/fonts.h fonts.h-1:incl:1
+  ! toolkit/guilib/makefile makefile-1:makefile:3 makefile-2:makefile:3
+  + toolkit/guilib/sources/fonts.c fonts.c-1:csrc:1
+  ! toolkit/misc/readme readme-1:ascii:1 readme-2:ascii:1
+
+Lines start with one of +, -, or !, followed by the workarea pathname
+of the object in the project. 
+
+If option -d is given, the output resembles that of "diff -ubr ...":
+
+  Only in 544_perl_module~1.04:project:1: 544_perl_module/CMSynergy/Users.pm
+  Only in 544_perl_module~1.04:project:1: 544_perl_module/CMSynergy/users.pl
+  Index: 544_perl_module/MANIFEST
+  --- MANIFEST~1:ascii:1	2002-08-02 14:39:43.000000000 +0200
+  +++ MANIFEST~10:ascii:1	2004-05-04 17:25:15.000000000 +0200
+  @@ -1,11 +1,32 @@
+  -CMSynergy.pm
+  -CMSynergy/Users.pm
+  +lib/VCS/CMSynergy.pm
+  +lib/VCS/CMSynergy/Client.pm
+  ...
+  Only in 544_perl_module~1.17:project:1: 544_perl_module/META.yml
+  Index: 544_perl_module/Makefile.PL
+  --- Makefile.PL~2:perl:1	2002-08-02 14:39:43.000000000 +0200
+  +++ Makefile.PL~11:perl:1	2004-05-03 13:35:10.000000000 +0200
+  @@ -1,16 +1,110 @@
+   use ExtUtils::MakeMaker;
+  +use Config;
+  +use strict;
+  ...
+
+=over 4
+
+=item +
+
+marks an object added in project2, 
+its objectname is given as additional info
+
+=item -
+
+marks an object deleted from project1,
+its objectname is given as additional info
+
+=item !
+
+marks an object that has a different version in project1 and project2,
+the objectnames are given as additional info
+
+=back
+
+Differences in directories (i.e. both objects are of cvtype "dir",
+but different versions) are suppressed, because they are not usefull.
+
+=head1 CCM OPTIONS
+
+See L<VCS::CMSynergy::Helper/GetOptions>.
+
+=head1 AUTHORS
+
+Roderich Schupp, argumentum GmbH <schupp@argumentum.de>
+
+=cut
+
+use Getopt::Long qw(:config bundling);
+use Pod::Usage;
+use VCS::CMSynergy;
+use VCS::CMSynergy::Helper; 
+use File::Basename;
+use strict;
+
+# extract CCM start options first...
+my @ccm_opts = VCS::CMSynergy::Helper::GetOptions;
+
+# ...then script-specific options
+my ($recursive, $verbose, $diff);
+GetOptions(
+    'd|diff'		=> \$diff,		# diff listing
+    'r|recursive'	=> \$recursive,		# include subprojects
+    'v|verbose'		=> \$verbose,		# verbose output
+) or pod2usage(2);
+pod2usage(2) unless @ARGV == 2;
+
+my $ccm = VCS::CMSynergy->new(
+    @ccm_opts,
+    RaiseError	=> 1,
+    PrintError	=> 0);
+
+my (@proj) = map 
+{
+    $_ .= ":project:1" unless /:project:1$/; 
+    $ccm->object($_)
+} @ARGV;
+
+
+
+my %tree;
+foreach my $tag (0..1)
+{
+    print STDERR "traversing $proj[$tag] ...\n" if $verbose;
+    $ccm->traverse_project(
+	{ 
+	    subprojects => $recursive,
+	    wanted => sub
+	    {
+		return if $_->cvtype eq "project";	# skip projects
+
+		# store into tree with workarea pathname as the key
+		my $path = join("/", 
+		    map { $_->name } @VCS::CMSynergy::Traversal::dirs, $_);
+		$tree{$path}->[$tag] = $_;
+	    },
+	}, $proj[$tag]);
+}
+
+print STDERR "computing differences ...\n" if $verbose;
+$ccm->set(cli_compare_cmd => "diff -ub %file1 %file2") if $diff;
+
+my @prefix = ("---", "+++");
+foreach my $tag (0..1)
+{
+    print $prefix[$tag], " ", $proj[$tag], "\t",
+	  $proj[$tag]->get_attribute("modify_time"), "\t",
+	  $proj[$tag]->get_attribute("status"), "\n";
+}
+
+my %only;
+foreach (sort keys %tree)
+{
+    my @obj = @{ $tree{$_} };
+
+    unless (defined $obj[1])		# deleted object
+    {
+	print("- $_ $obj[0]\n"), next unless $diff;
+
+	# only show deleted directories once (instead of the whole subtree)
+	$only{$_}++ if $obj[0]->cvtype eq "dir";
+	next if $only{dirname($_)};		
+
+	print "Only in $proj[0]: $_\n";
+	next;
+    }
+    unless (defined $obj[0])		# added object
+    {
+	print("+ $_ $obj[1]\n"), next unless $diff;
+
+	# only show added directories once (instead of the whole subtree)
+	$only{$_}++ if $obj[1]->cvtype eq "dir";
+	next if $only{dirname($_)};		
+
+	print "Only in $proj[1]: $_\n";
+	next;
+    }
+    next if $obj[0] eq $obj[1] 		# same object
+            or ($obj[0]->cvtype eq "dir" && $obj[1]->cvtype eq "dir");
+	    				# suppress different "dir"s
+
+    print("! $_ @obj\n"), next unless $diff;
+
+    # generate diff
+    my ($rc, $out) = $ccm->diff($obj[0], $obj[1]);
+
+    # fudge the two header lines
+    $out =~ s{\A--- .*?\t(.*)\n\+\+\+ .*?\t(.*)\n}
+             {$prefix[0] $obj[0]\t$1\n$prefix[1] $obj[1]\t$2\n};
+    print "Index: $_\n", $out, "\n";
+}
