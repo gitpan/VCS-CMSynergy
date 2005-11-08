@@ -1,6 +1,6 @@
 package VCS::CMSynergy::Client;
 
-our $VERSION = sprintf("%d.%02d", q%version: 1.22 % =~ /(\d+)\.(\d+)/);
+our $VERSION = do { (my $v = q%version: 14 %) =~ s/.*://; sprintf("%d.%02d", split(/\./, $v), 0) };
 
 =head1 NAME
 
@@ -119,7 +119,7 @@ sub new
 }
 
 
-sub memoize_method 
+sub _memoize_method 
 {
     my ($class, $method, $slot) = @_;
     $slot ||= $method;
@@ -140,19 +140,19 @@ sub memoize_method
 sub start
 {
     my ($this, %args) = @_;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
 
     return VCS::CMSynergy->_start($this, %args);
 }
 
 
-sub default	{ $Default ||= shift->new(); }
+sub _default	{ $Default ||= shift->new(); }
 
 
 sub ccm						# class/instance method
 {
     my $this = shift;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
 
     my ($rc, $out, $err) = $this->_ccm($OneArgFoo && @_ == 1, @_);
 
@@ -187,7 +187,7 @@ sub _ccm
 		{
 		    # working directory has changed since coprocess was spawned:
 		    # shut down coprocess and start a new one
-		    # NOTE: don´t call _ccm here (infinite recursion)
+		    # NOTE: don't call _ccm here (infinite recursion)
 		    $this->_kill_coprocess;
 		    if ($this->{coprocess} = $this->_spawn_coprocess)
 		    {
@@ -238,7 +238,7 @@ sub _ccm
     if ($Debug)
     {
 	my $elapsed = sprintf("%.2f", Time::HiRes::tv_interval($t0));
-	if ($Debug > 8)
+	if ($Debug >= 8)
 	{
 	    $this->trace_msg("<- ccm($this->{ccm_command})\n");
 	    $this->trace_msg("-> rc = $rc [$elapsed sec]\n");
@@ -263,22 +263,22 @@ sub _spawn_coprocess
     unless (eval "use Expect 1.15; 1")
     {
 	$Error = $self->{error} = $@;
-	return undef;
+	return;
     }
 
     my $env = $self->{env};
     local @ENV{keys %$env} = values %$env if defined $env;
 
     my $exp = Expect->new
-	or $Error = $self->{error} = "Expect->new failed", return undef;
+	or $Error = $self->{error} = "Expect->new failed", return;
     ($exp->log_stdout(0) && $exp->slave->set_raw && $exp->set_raw)
-	or $Error = $self->{error} = $exp->exp_error, return undef;
+	or $Error = $self->{error} = $exp->exp_error, return;
     $exp->spawn($self->ccm_exe)
-	or $Error = $self->{error} = $exp->exp_error, return undef;
+	or $Error = $self->{error} = $exp->exp_error, return;
     
     # look for initial "ccm> " prompt
     $exp->expect(undef, -re => $ccm_prompt)
-	or $Error = $self->{error} = $exp->exp_error, return undef;
+	or $Error = $self->{error} = $exp->exp_error, return;
 
     return $exp;
 }
@@ -295,7 +295,7 @@ sub _kill_coprocess
 sub exec
 {
     my ($this, @cmd) = @_;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
 
     local @ENV{keys %{ $this->{env} }} = values %{ $this->{env} };
 
@@ -327,7 +327,7 @@ sub ccm_exe
 {
     return File::Spec->catfile(shift->ccm_home, "bin", "ccm$Config{_exe}");
 }
-__PACKAGE__->memoize_method('ccm_exe');
+__PACKAGE__->_memoize_method('ccm_exe');
 
 # helper: inverse function of POSIX::WEXITSTATUS()
 sub _exitstatus	{ return $_[0] << 8; }
@@ -364,28 +364,28 @@ sub ccm_command
 sub ccm_home					# class/instance method
 {
     my $this = shift;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
     return $this->{env}->{CCM_HOME};
 }
 
 sub out 					# class/instance method
 {
     my $this = shift;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
     return wantarray ? split(/\n/, $this->{out}) : $this->{out};
 }
 
 sub err 					# class/instance method
 {
     my $this = shift;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
     return $this->{err};
 }
 
 sub version					# class/instance method
 {
     my $this = shift;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
 
     my $version = $this->_version;
     return @$version{qw(cmsynergy schema informix patches)} if wantarray;
@@ -403,8 +403,9 @@ sub _version
     return $this->set_error($err || $out) unless $rc == 0;
 
     my %version;
-    my $cmsynergy_rx = qr/(?:Continuus|CM Synergy)/;
-    ($version{cmsynergy}) = $out =~ /^$cmsynergy_rx Version\s+(\S*)$/imo;
+    my $cmsynergy_rx = qr/(?:Continuus|CM Synergy|SYNERGY\/CM)/;
+    ($version{cmsynergy}) = $out =~ /^$cmsynergy_rx Version\s+(\S*)$/imo
+	or return $this->set_error("can't recognize version from `$out'");
     ($version{short}) = $version{cmsynergy} =~ /^(\d+\.\d+)/;
     
     ($version{schema}) = $out =~ /^$cmsynergy_rx Schema Version\s+(.*)$/imo;
@@ -413,13 +414,13 @@ sub _version
 	if $out =~ /^$cmsynergy_rx Patch Version\s+(.*?)(?:\Z|^$cmsynergy_rx|^Informix)/imso; 
     return \%version;
 }
-__PACKAGE__->memoize_method('_version', 'version');
+__PACKAGE__->_memoize_method('_version', 'version');
 
 
 sub ps	
 {
     my ($this, @filter) = @_;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
 
     # "ps" is not a recognized "interactive" command
     local $this->{coprocess} = undef;
@@ -458,7 +459,7 @@ sub ps
 sub status	
 {
     my $this = shift;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
 
     my ($rc, $out, $err) = $this->_ccm(0, 'status');
     return $this->set_error($err || $out) unless $rc == 0;
@@ -471,11 +472,15 @@ sub status
 	    $user = $1;
 	    next;
 	}
-	if (/^(graphical|command) interface \@ (\S+)/i)
+	if (my ($interface, $rfc_address) = /^(.*?) interface \@ (\S+)/i)
 	{
-	    $session = { 
-		rfc_address	=> $2,
-		process		=> $1 =~ /graphical/i ? "gui_interface" : "cmd_interface",
+	    # start of a session description;
+	    # convert interface to process name used by `ccm ps'
+	    $session = 
+	    {
+		process		=> $interface =~ /graphical/i ? 
+				     "gui_interface" : "cmd_interface",
+		rfc_address	=> $rfc_address,
 		user		=> $user,
 	    };
 	    push @sessions, $session;
@@ -485,7 +490,7 @@ sub status
 	{
 	    # sanitize database path (all other CM Synergy information commands
 	    # show it with trailing "/db", so we standardize on that)
-	    # NOTE: carefull here, because the database might reside on Windows
+	    # NOTE: careful here, because the database might reside on Windows
 	    ($session->{database} = $1) 		
 		=~ s{^(.)(.*?)(\1db)?$}{$1$2$1db};
 	    next;
@@ -496,14 +501,14 @@ sub status
 
 
 # FIXME does not work on windows 
-# (also not on unix clients that don't have ccmdb_server installed)
+# (also not on unix clients that don't have the ccmdb program installed)
 sub databases	
 {
     my ($this, $servername) = @_;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
 
     my @ccmdb_server = 
-	(File::Spec->catfile($this->ccm_home, qw(bin ccmdb_server)), '-status');
+	(File::Spec->catfile($this->ccm_home, qw(bin ccmdb)), qw/server -status/);
     push @ccmdb_server, $servername if defined $servername;
 
     my ($rc, $out, $err) = $this->exec(@ccmdb_server);
@@ -511,7 +516,7 @@ sub databases
 
     # strip leading/trailing stuff
     my ($list) = $out =~ /^===.*?$(.*?)^There is a total/ms;
-    return $this->set_error("unrecognized output from \"ccmdb_server -status\": $out")
+    return $this->set_error("unrecognized output from \"ccmdb server -status\": $out")
 	unless defined $list;
     return grep { !/dbpath not available/ }
            map  { (split(' ', $_, 3))[2]  } 
@@ -522,7 +527,7 @@ sub databases
 sub hostname
 {
     my ($this, @filter) = @_;
-    $this = __PACKAGE__->default unless ref $this;
+    $this = __PACKAGE__->_default unless ref $this;
 
     our %Hostname;				# cache by CCM_HOME
     my $ccm_home = $this->ccm_home;
@@ -904,6 +909,10 @@ the Informix version (e.g. "9.21.UC3X6")
 a possible empty array of applied CM Synergy patches
 
 =back
+
+=head2 ccm_exe
+
+Returns the absolute pathname of the B<ccm> executable.
 
 =head2 trace
 

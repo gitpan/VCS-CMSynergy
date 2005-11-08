@@ -4,9 +4,6 @@ VCS::CMSynergy::Changes - list of changes to VCS::CMSynergy
 
 =cut
 
-Before relases:
-- test alternative patch for IPC::Run3
-
 Known problems:
 
 - 'make test' on Windows with out-of-the-box CM Synergy installation:
@@ -17,8 +14,47 @@ Known problems:
 - traverse_project()
 	what about absolute subprojects (with subprojects => 1)
 
-
 =head1 CHANGES
+
+=head2 Changes in Version 1.27
+
+  Fixed a bug where empty string attributes could be returned 
+  as undef in query_*() (depending on the order of %keywords 
+  in the actual query). Reason was the careless use of split()
+  without a limit (which strips trailing empty fields by default).
+
+  INCOMPATIBLE CHANGE: Make attribute values returned from 
+  the query_*() family consistent with the return value of get_attribute()
+  w.r.t. a trailing newline: If the "real" attribute value is "foo\nbar\n"
+  then that's what query_hashref() would have returned. But get_attribute()
+  would have returned "foo\nbar" (i.e. stripped the trailing newline).
+  The reason is that get_attribute() uses "ccm attr -show" and
+  Synergy always appends a newline to the output of a command unless
+  one is already there. So there's no way of telling whether the "real"
+  value was "foo\nbar" or "foo\nbar\n". Therefore ccm() has always stripped
+  a trailing newline from the command's stdout. Now we return "foo\nbar"
+  in both cases.
+
+  Users.pm: Always try to preserve the order of a user's roles.
+  If an insertion preserving order tied hash class (e.g. Tie::IxHash)
+  is available, also preserve the order of user lines.
+
+  Implemented folder_object() (similar to task_object()).
+
+  Make cat_object() work when destination is a filehandle or glob ref
+  (now that my fix has found its way into IPC::Run3).
+
+  Implement V::C::Object methods is_RELATION_of and has_RELATION
+  (via AUTOLOAD): $obj->is_RELATION_of is short for
+
+    $obj->ccm->query_object("is_RELATION_of('$obj')")
+
+  Add README.datetime about problems with CM Synergy when trying
+  to obtain predictable and consistent datetime values.
+
+  Add tests for POD and POD coverage and all test failures.
+
+  Drop README.IPC-Run3 as behaviour with fork is fixed with IPC::Run3 0.032.
 
 =head2 Changes in Version 1.26
 
@@ -137,7 +173,7 @@ Known problems:
   project work area path is of the form tempdir/name-version, 
   use attribute wa_path instead.
 
-  Implemented `postprocess´ callback for traverse_project().
+  Implemented `postprocess' callback for traverse_project().
 
   Trace information for CM commands now includes the elpased time to
   execute the command. Layout of trace information changed for debug
