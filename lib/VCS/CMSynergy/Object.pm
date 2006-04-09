@@ -1,6 +1,6 @@
 package VCS::CMSynergy::Object;
 
-our $VERSION = do { (my $v = q%version: 10 %) =~ s/.*://; sprintf("%d.%02d", split(/\./, $v), 0) };
+our $VERSION = do { (my $v = q%version: 17 %) =~ s/.*://; sprintf("%d.%02d", split(/\./, $v), 0) };
 
 =head1 NAME
 
@@ -49,23 +49,19 @@ This synopsis only lists the major methods.
 
 =cut 
 
-    
+use base qw(Class::Accessor::Fast);
+__PACKAGE__->mk_ro_accessors(qw/objectname ccm name version cvtype instance/);
+
 use Carp;
 use VCS::CMSynergy::Client qw(_usage);
 
+# NOTE: We can't just alias string conversion to objectname()
+# as it is called (as overloaded operator) with three arguments
+# which Class::Accessor's ro accessors dont't like.
 use overload 
-    '""'	=> \&objectname,
+    '""'	=> sub { $_[0]->objectname },
     cmp		=> sub { $_[0]->objectname cmp $_[1]->objectname },
     fallback	=> 1;
-
-{
-    # generate getter methods
-    no strict 'refs';
-    foreach my $method (qw(objectname ccm name version cvtype instance))
-    {
-	*{$method} = sub { shift->{$method}; };
-    }
-}
 
 my $have_weaken = eval "use Scalar::Util qw(weaken); 1";
 
@@ -107,8 +103,8 @@ sub new
 }
 
 # convenience methods for frequently used tests
-sub is_dir	{ shift->cvtype eq "dir"; }
-sub is_project	{ shift->cvtype eq "project"; }
+sub is_dir	{ return shift->cvtype eq "dir"; }
+sub is_project	{ return shift->cvtype eq "project"; }
 
 
 # NOTE: All access to a VCS::CMSynergy::Objects data must either use
@@ -120,57 +116,40 @@ sub is_project	{ shift->cvtype eq "project"; }
 # redefined in ObjectTieHash.pm.
 
 # access to private parts
-sub _private 	{ shift; }
+sub _private 	{ return shift; }
 
 sub list_attributes
 {
     my ($self) = @_;
 
-    my $private = $self->_private;
-    return $private->{attributes} ||= $private->{ccm}->list_attributes($private->{objectname});
+    return $self->ccm->list_attributes($self);
 }
 
 sub get_attribute
 {
     my ($self, $attr_name) = @_;
 
-    my $private = $self->_private;
-
     if (VCS::CMSynergy::use_cached_attributes())
     {
-	my $acache = $private->{acache};
+	my $acache = $self->_private->{acache};
 	return $acache->{$attr_name} if exists $acache->{$attr_name};
+    }
 
-	# actually get attribute and update cache 
-	# (even if undef, i.e. non-existent)
-	return $acache->{$attr_name} = 	
-	    $private->{ccm}->get_attribute($attr_name, $private->{objectname});
-    }
-    else
-    {
-	return $private->{ccm}->get_attribute($attr_name, $private->{objectname});
-    }
+    my $value = $self->ccm->get_attribute($attr_name, $self);
+
+    $self->_update_acache($attr_name => $value);
+    return $value;
 }
 
 sub set_attribute
 {
     my ($self, $attr_name, $value) = @_;
 
-    my $private = $self->_private;
-    my $rc = $private->{ccm}->set_attribute($attr_name, $private->{objectname}, $value);
+    my $rc = $self->ccm->set_attribute($attr_name, $self, $value);
 
-    # update cache if necessary
-    if (VCS::CMSynergy::use_cached_attributes())
-    {
-	if ($rc)
-	{
-	    $private->{acache}->{$attr_name} = $value;	# update
-	}
-	else
-	{
-	    delete $private->{acache}->{$attr_name};	# invalidate
-	}
-    }
+    if (defined $rc) { $self->_update_acache($attr_name => $value); }
+    else             { $self->_forget_acache($attr_name); }
+
     return $rc;
 }
 
@@ -181,21 +160,9 @@ sub create_attribute
     
     my $rc = $self->ccm->create_attribute($attr_name, $type, $value, $self);
 
-    # update cache and atrribute list if necessary
-    my $private = $self->_private;
-    $private->{attributes}->{$attr_name} = $type
-	if $rc && $private->{attributes};
-    if (VCS::CMSynergy::use_cached_attributes())
-    {
-	if ($rc)
-	{
-	    $private->{acache}->{$attr_name} = $value;	# update
-	}
-	else
-	{
-	    delete $private->{acache}->{$attr_name};	# invalidate
-	}
-    }
+    # update attribute cache if necessary
+    $self->_update_acache($attr_name => $value) if $rc;
+
     return $rc;
 }
 
@@ -206,22 +173,10 @@ sub delete_attribute
 
     my $rc = $self->ccm->delete_attribute($attr_name, $self);
 
-    # update cache and attribute list if necessary
-    my $private = $self->_private;
-    delete $private->{attributes}->{$attr_name}
-	if $rc && $private->{attributes};
-    if (VCS::CMSynergy::use_cached_attributes())
-    {
-	$private->{acache}->{$attr_name} = undef;
-	if ($rc)
-	{
-	    $private->{acache}->{$attr_name} = undef;	# update
-	}
-	else
-	{
-	    delete $private->{acache}->{$attr_name};	# invalidate
-	}
-    }
+    # update attribute cache if necessary
+    # NOTE: the attribute may have reverted from local back to inherited
+    $self->_forget_acache($attr_name) if $rc; 	
+
     return $rc;
 }
 
@@ -247,14 +202,15 @@ sub copy_attribute
 	    {
 		# if we already know the value of the copied attribute(s)
 		# and the copy was successful, update the targets' caches
-		$_->_private->{acache}->{$attr_name} = $acache->{$attr_name} foreach @objects;
+		my $value = $acache->{$attr_name};
+		$_->_update_acache($attr_name => $value) foreach @objects;
 	    }
 	    else
 	    {
 		# in all other cases, invalidate the targets' caches
 		# (esp. in case of failure, since we can't know 
 		# which got actually updated)
-		delete $_->_private->{acache}->{$attr_name} foreach @objects;
+		$_->_forget_acache($attr_name) foreach @objects;
 	    }
 	}
     }
@@ -262,32 +218,78 @@ sub copy_attribute
     return $rc;
 }
 
+# $obj->_update_acache($name => $value) or
+# $obj->_update_acache(\%attributes)
+sub _update_acache
+{
+    return unless VCS::CMSynergy::use_cached_attributes();
+
+    my $self = shift;
+    if (@_ == 2)
+    {
+	$self->_private->{acache}->{$_[0]} = $_[1];
+    }
+    else
+    {
+	my $attrs = shift;
+	@{$self->_private->{acache}}{keys %$attrs} = values %$attrs;
+    }
+}
+
+# $obj->_forget_acache(@names)
+sub _forget_acache
+{
+    return unless VCS::CMSynergy::use_cached_attributes();
+
+    my $self = shift;
+    delete $self->_private->{acache}->{$_} foreach @_;
+}
+
+
 # test whether object exists (without causing an exception)
 sub exists
 {
     my $self = shift;
-    my ($rc) = $self->ccm->_ccm(0, qw(attribute -show version), $self);
+    my ($rc) = $self->ccm->_ccm(qw/attribute -show version/, $self);
     return $rc == 0;
 }
 
 sub property
 {
     my ($self, $keyword) = @_;
-    $self->ccm->property($keyword, $self);
+    my $props = $self->ccm->property($keyword, $self);
+    $self->_update_acache(UNIVERSAL::isa($keyword, 'ARRAY') ? $props : { $keyword => $props });
+    return $props;
 }
 
 sub displayname
 {
     my ($self) = @_;
     # cache this property (because it's immutable)
-    $self->_private->{displayname} ||= $self->property('displayname');
+    return $self->_private->{displayname} ||= $self->property('displayname');
 }
 
 sub cvid
 {
     my ($self) = @_;
     # cache this property (because it's immutable)
-    $self->_private->{cvid} ||= $self->property('cvid');
+    return $self->_private->{cvid} ||= $self->property('cvid');
+}
+
+
+sub recursive_is_member_of
+{
+    my $self = shift;
+    return $self->ccm->query_object_with_attributes(
+	"recursive_is_member_of('$self',depth)", @_);
+}
+
+
+sub hierarchy_project_members
+{
+    my $self = shift;
+    return $self->ccm->query_object_with_attributes(
+	"hierarchy_project_members('$self',depth)", @_);
 }
 
 
@@ -295,7 +297,7 @@ sub cvid
 # same for has_foo
 sub AUTOLOAD
 {
-    my ($this) = @_;
+    my $this = shift;
 
     our $AUTOLOAD;
 
@@ -309,8 +311,7 @@ sub AUTOLOAD
 
     if ($method =~ /^(is_.*_of|has_.*)$/)
     {
-	shift @_;
-	return $this->ccm->query_object_with_attributes({ $method => [ $this ] }, @_);
+	return $this->ccm->query_object_with_attributes("$method('$this')", @_);
     }
     croak("Can't locate object method \"$method\" via class \"$class\"");
 }
@@ -452,7 +453,7 @@ C<VCS::CMSynergy::Object>s in C<@to_file_specs>
 when L<VCS::CMSynergy/:cached_attributes> is in effect.
 
 Note: The optional C<$flags> parameter of L<VCS::CMSynergy/copy_attribute> is
-not supoorted, because it would mean traversing the target projects
+not supported, because it would mean traversing the target projects
 to update or invalidate attribute caches.
 
 =head2 list_attributes
@@ -494,6 +495,24 @@ caches their return value in the C<VCS::CMSynergy::Object>
 
 =head1 OBJECT RELATIONS
 
+=head2 recursive_is_member_of, hierarchy_project_members
+
+These are convenience methods to enumerate recursively all members
+of a project or just the sub projects. Obviously it only makes
+sense to invoke these methods on a C<VCS::CMSynergy::Object> 
+of cvtype "project".
+
+  $proj->recursive_is_member_of
+  $proj->hierarchy_project_members
+
+are exactly the same as
+
+  $proj->ccm->query_object("recursive_is_member_of('$proj',depth)")
+  $proj->ccm->query_object("hierarchy_project_members('$proj',depth)")
+
+If you supply extra arguments then C<query_object_with_attributes>
+is called instead of C<query_object> with these extra arguments.
+
 =head2 is_RELATION_of, has_RELATION
 
   # assume $task is a VCS::CMSynergy::Object with cvtype "task"
@@ -511,7 +530,7 @@ are exactly the same as
   $obj->ccm->query_object("has_RELATION('$obj')")
 
 If you supply extra arguments then C<query_object_with_attributes>
-is called instead of C<qery_object> with these extra arguments.
+is called instead of C<query_object> with these extra arguments.
 
 See the CM Synergy documentation for the built-in relations. Note that it's
 not considered an error to use a non-existing relation, the methods

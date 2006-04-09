@@ -645,14 +645,14 @@ view it as a fancy form of C<query_hashref> where we don't store
 the attributes values of C<@attributes> in some anonymous hash,
 but rather in the corresponding object. Thus the loop
 
-  for my $obj (@{ $ccm->query_object_with_attributes("...", qw(foo bar)) })
+  for my $obj (@{ $ccm->query_object_with_attributes("...", qw(foo)) })
   {
-    print "$obj: $obj->{foo} $obj->{bar}\n";
+    print "$obj: foo=", $obj->get_attribute("foo"), "\n";
   }
 
-issues a total of I<one> B<ccm> calls. Note: this example assumes 
+issues a I<total of one> B<ccm> calls. Note: this example assumes 
 
-  use VCS::CMSynergy qw(:cached_attributes :tied_objects);
+  use VCS::CMSynergy qw(:cached_attributes);
 
 =head2 query_count
 
@@ -901,6 +901,113 @@ returns
 
   "guilib/sources/main.c"
 
+=head2 relations_hashref
+
+  $ccm->relations_hashref(%options);
+
+  $ccm->relations_hashref(
+    to              => "bufcolor.c-2:csrc:1",
+    from_attributes => [ qw/objecctname status owner/ ]);
+
+Executes B<ccm relate -show ...> where 
+C<%options> may contain any of the following keys:
+
+=over 4
+
+=item from => $file_spec, to => $file_spec
+
+Restricts one or both ends of the relation. The option value may
+be any C<$file_spec> accepted by CM Synergy including 
+a C<VCS::CMSynergy::Object>.
+
+=item name => $string
+
+Restricts the return value to relations of type C<$string>, 
+e.g. C<associated_cv> or C<successor>.
+
+=item from_attributes => \@keywords, to_attributes => \@keywords
+
+The option value is a reference to an array of attributes
+that should be retrieved for the "from" and "to" objects
+of a relation, resp.
+
+=back
+
+The result is a reference to an array of hashes where each hash
+has exactly four keys describing a relation between two objects:
+
+=over 4
+
+=item from
+
+The value describes the "from" object of the relation.
+
+If C<from_attributes> was not specified the value is the
+I<objectname> of the "from" object.
+
+If C<from_attributes> was specified the value is a reference 
+to a I<hash of attribute names and values>, 
+its keys given by C<from_attributes>.
+
+The pseudo keywords C<object> and C<task_objects> (see 
+L</"query_arrayref, query_hashref">) may be used in C<from_attributes>.
+
+=item to
+
+The value describes the "to" object of the relation.
+
+The value depends on C<to_attributes> as described for the "from" key.
+
+=item name
+
+The value is name of the relation.
+
+=item create_time
+
+The value is the time the relation was created.
+
+=back
+
+If there a no hits, a reference to an empty array is returned.  
+
+If there was an error, C<undef> is returned.
+
+=head2 relations_object
+
+  my $relations = $ccm->relations_object(%options);
+
+Executes B<ccm relate -show ...> where 
+C<%options> are the same as described for L</relations_hashref>. 
+
+The result is a reference to an array of hashes where each hash
+has exactly four keys describing a relation between two objects:
+
+=over 4
+
+=item from, to
+
+The value is a C<VCS::CMSynergy::Object>. 
+
+=item name
+
+The value is name of the relation.
+
+=item create_time
+
+The value is the time the relation was created.
+
+=back
+
+If there a no hits, a reference to an empty array is returned.  
+
+If there was an error, C<undef> is returned.
+
+If C<from_attributes> or C<to_attributes> are specified, these
+are used as hints to prime the attribute caches of the
+"from" or "to" C<VCS::CMSynergy::Object>s, resp., similar to
+L</query_object_with_attributes>. This is only useful when
+L</:cached_attributes> is in effect. 
+
 =head2 traverse_project
 
   traverse_project(\&wanted, $project, $dir);
@@ -1109,8 +1216,8 @@ of options for project traversal:
 
 =item C<subprojects> (boolean)
 
-If this option is set, the mapping will also include
-members of subprojects. It is "off" by default.
+If this option is set, the mapping will recurse into
+subprojects. It is "off" by default.
 It corresponds to the option of the same name for
 L</traverse_project>.
 
@@ -1127,6 +1234,17 @@ Use C<pathsep> as the separator for the path names (the keys of
 the returned hash). If you do not specify this, 
 C<project_tree> uses the path separator appropriate 
 for the operating system the script is running on.
+
+=item C<mark_projects> (boolean)
+
+This option is "off" by default.
+If a path corresponds to a (sub) project, the correspondig hash
+value refers to the (sub) project's top level directory 
+(a C<VCS::CMSynergy::Object> with C<< ->cvtype >> "dir");
+if this option is set, the hash value refers to the (sub) project itself
+(a C<VCS::CMSynergy::Object> with C<< ->cvtype >> "project").
+Note that in this case the top level directory is omitted from the 
+mapping (because it has the same path as its project).
 
 =back
 
@@ -1190,7 +1308,8 @@ with C<defined> as an attribute's value can never be C<undef>.
   $ccm->set_attribute($attr_name, $file_spec, $value);
 
 Set the value of the attribute C<$attr_name>
-for C<$file_spec> to C<$value> (using (B<ccm attribute -modify>).
+for C<$file_spec> to C<$value> 
+(usually using B<ccm attribute -modify>, but see below).
 
 Returns C<$value> on success.  If C<RaiseError>
 is not set and an error occurs (e.g. attribute C<$attr_name> does not
@@ -1203,6 +1322,16 @@ multiple lines, have arbitrary length or are empty strings.
 Note the following differences from B<ccm attribute -modify>:
 
 =over 4
+
+=item *
+
+If the attribute C<$attr_name>is inherited, 
+B<ccm attribute -modify $attr_name> will fail. But C<set_attribute> will
+retry with B<ccm attribute -create $attr_name -force> in this case
+(thereby converting the attribute to a local attribute). I.e. whenever
+L</get_attribute> indicates that an attribute exists (by returning something
+C<defined>), you can always set its value with C<set_attribute>
+(given you have necessary permissions).
 
 =item *
 
@@ -1508,35 +1637,12 @@ value is returned. If C<$new_value> is C<undef>, C<$option> is unset.
 In the third form, a reference to a hash is returned. The hash consists
 of all currently defined options as keys and their respective values.
 
-=head2 ccm_with_option, ccm_with_text_editor
+=head2 ccm_with_text_editor
 
-  ($rc, $out, $err) = $ccm->ccm_with_option($option, $value, @cmd);
   ($rc, $out, $err) = $ccm->ccm_with_text_editor($text_value, @cmd);
 
-These are convenience functions for executing a command 
-that is sensitive to the value of a session option, esp. B<text_editor>.
-
-C<ccm_with_option> does the following:
-
-=over 4
-
-=item *
-
-saves the old value of C<$option> and sets it to C<$value> with
-
-  $ccm->set($option, $value);
-
-=item *
-
-with the new setting in effect, executes
-
-  $ccm->ccm(@cmd);
-
-=item *
-
-finally restores the old value of C<$option>.
-
-=back
+This is a convenience functions for executing a command 
+that is sensitive to the value of the session option C<text_editor>.
 
 C<ccm_with_text_editor> is useful in scripting B<ccm> commands
 like B<ccm users>. These commands usually open a temporary file
@@ -1555,13 +1661,22 @@ say C</tmp/a5Xghd>, and writes the string C<$text_value> into it,
 
 =item *
 
-then executes (on Unix)
+saves the old value of C<text_editor> and sets it to (on Unix)
 
-  $ccm->ccm_with_value(
-    text_editor => "cp /tmp/a5Xghd %filename", @cmd);
+  "cp /tmp/a5Xghd %filename"
+
+=item *
+
+executes
+
+  $ccm->ccm(@cmd)
 
 which causes CM Synergy to accept C<$text_value> as the "updated value"
 w.r.t. to command C<@cmd>,
+
+=item *
+
+restores the value oc C<text_editor>
 
 =item *
 
@@ -1569,7 +1684,7 @@ finally removes the temporary file.
 
 =back
 
-Bot C<ccm_with_option> and C<ccm_with_text_editor> return the same
+C<ccm_with_text_editor> returns the same
 value as the inner L</ccm> method, except when there is an error setting
 the new C<$value> of C<$option>.
 
@@ -1778,7 +1893,7 @@ L<VCS::CMSynergy::Object>,
 L<VCS::CMSynergy::Client>,
 L<VCS::CMSynergy::Users> 
 
-=head1 AUTHORS
+=head1 AUTHOR
 
 Roderich Schupp, argumentum GmbH <schupp@argumentum.de>
 

@@ -1,18 +1,29 @@
-name:         VCS-CMSynergy
-version:      1.27
-version_from: lib/VCS/CMSynergy.pm
-installdirs:  site
-license:      perl
-requires:
-  File::Spec:                    0
-  File::Temp:                    0
-  IPC::Run3:                     0.030
-  Test::More:                    0
-  Time::HiRes:                   0
-no_index:
-  package:
+abstract: Perl interface to Telelogic SYNERGY/CM (aka Continuus/CM)
+author: Roderich Schupp <schupp@argumentum.de>
+build_requires: 
+  End: 0
+  Test::Deep: 0.093
+  Test::More: 0
+distribution_type: module
+generated_by: Module::Install version 0.61
+license: perl
+name: VCS-CMSynergy
+no_index: 
+  directory: 
+    - inc
+    - t
+  module: 
     - VCS::CMSynergy::ObjectTieHash
+  package: 
     - VCS::CMSynergy::Traversal
     - Tie::ReadonlyArray
-distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.17
+requires: 
+  Class::Accessor::Fast: 0
+  File::Spec: 0
+  File::Temp: 0
+  IPC::Run3: 0.030
+  List::Util: 1.09
+  Scalar::Util: 1.09
+  Time::HiRes: 0
+  perl: 5.6.0
+version: 1.28

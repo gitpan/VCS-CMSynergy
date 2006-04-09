@@ -1,4 +1,5 @@
 use Data::Dumper;
+use Test::Deep;
 
 our %test_session;
 
@@ -34,7 +35,6 @@ BEGIN
     # the ISO C standard; also, don't use locale dependent conversions
     $ENV{CCM_DATETIME_FMT} = "%Y-%m-%d %H:%M:%S";
 }
-
 
 # all_ok BLOCK AREF [, TEST_NAME]
 # check if predicate BLOCK holds for all elements in list
@@ -81,6 +81,7 @@ sub verbose($$)
 
     my ($tag, $result) = @_;
     my $dumper = Data::Dumper->new([ $result], [ $tag ]);
+    $dumper->Useqq(1);
     $dumper->Freezer('Freezer');
     print STDERR $dumper->Dump;
 }
@@ -94,5 +95,57 @@ sub VCS::CMSynergy::Object::Freezer
 # Shut up annoying Data::Dumper warning
 # WARNING(Freezer method call failed): Can't locate object method "Freezer"...
 sub VCS::CMSynergy::Freezer	{ return shift; }
+
+
+### Test::Deep stuff
+
+# check for an array of VCOs (optionally of the given cvtype)
+sub vco_array
+{
+    my ($cvtype) = @_;
+    return $cvtype ? array_each(isa("VCS::CMSynergy::Object"),
+				methods(cvtype => $cvtype)) 
+                   : array_each(isa("VCS::CMSynergy::Object")); 
+}
+
+# check whether $got is VCS::CMSynergy::Object with the given objectname
+sub vco 	{ Test::Deep::VCO->new(@_); }
+sub vco_list	{ map { vco($_) } @_ }
+
+package Test::Deep::VCO;
+
+use Test::Deep::Cmp;
+
+# overload "cmp" to compare objectnames
+# NOTE: we need this so that a Test::Deep::VCO can be put into 
+# a set() or bag() (whose contents are sorted with "cmp")
+use overload 
+    cmp		=> sub { $_[0]->{val} cmp $_[1]->{val} },
+    '""'	=> sub { $_[0]->{val} };         
+
+sub init
+{
+	my $self = shift;
+
+	my $val = shift;
+	$self->{val} = $val;
+}
+
+sub descend
+{
+	my $self = shift;
+	my $got = shift;
+
+	return UNIVERSAL::isa($got, "VCS::CMSynergy::Object") 
+	       && $got->objectname eq $self->{val};
+}
+
+sub diag_message
+{
+	my $self = shift;
+	my $where = shift;
+
+	return "Checking $where whether is VCS::CMSynergy::Object \"$self->{val}\"";
+}
 
 1;
