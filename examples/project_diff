@@ -145,7 +145,7 @@ Roderich Schupp, argumentum GmbH <schupp@argumentum.de>
 
 use Getopt::Long qw(:config bundling);
 use Pod::Usage;
-use VCS::CMSynergy qw(:tied_objects);
+use VCS::CMSynergy 1.29 qw(:cached_attributes :tied_objects);
 use VCS::CMSynergy::Helper; 
 use strict;
 
@@ -318,11 +318,7 @@ my $ccm = VCS::CMSynergy->new(
     RaiseError	=> 1,
     PrintError	=> 0);
 
-my ($old_project, $new_project) = map 
-{
-    $_ .= ':project:' . $ccm->default_project_instance unless /:project:/; 
-    $ccm->object($_);
-} @ARGV;
+my ($old_project, $new_project) = map { $ccm->project_object($_) } @ARGV;
 
 my $diff_status;
 END { $? = defined $diff_status ? $diff_status : 2; }
@@ -340,7 +336,7 @@ my $diff = $Diff->new($ccm);
 
 # print project header lines
 $diff->meta(0, $old_project);
-$diff->meta(1, $old_project);
+$diff->meta(1, $new_project);
 
 # NOTE: the hiding of subtrees depends on an ordering of keys %tree
 # that sorts "foo/bar/quux" _after_ "foo/bar"

@@ -1,6 +1,6 @@
 package VCS::CMSynergy::Object;
 
-our $VERSION = do { (my $v = q%version: 17 %) =~ s/.*://; sprintf("%d.%02d", split(/\./, $v), 0) };
+our $VERSION = do { (my $v = q%version: 23 %) =~ s/.*://; sprintf("%d.%02d", split(/\./, $v), 0) };
 
 =head1 NAME
 
@@ -11,8 +11,9 @@ VCS::CMSynergy::Object - convenience wrapper to treat objectnames as an object
   use VCS::CMSynergy;
   $ccm = VCS::CMSynergy->new(%attr);
   ...
-  $obj1 = $ccm->object($name, $version, $cvtype, $instance);
-  $obj2 = $ccm->object($objectname);
+  $obj = $ccm->object($name, $version, $cvtype, $instance);
+  $obj = $ccm->object($objectname);
+  print ref $obj;			# "VCS::CMSynergy::Object"
 
   # objectname and its constituents
   print "...and the object is $obj";
@@ -20,7 +21,7 @@ VCS::CMSynergy::Object - convenience wrapper to treat objectnames as an object
   print "version    = ", $obj->version;
   print "cvtype     = ", $obj->cvtype;
   print "instance   = ", $obj->instance;
-  print "objectname = ", $obj1->objectname;
+  print "objectname = ", $obj->objectname;
 
   # attribute methods, optionally caching with 
   #   use VCS::CMSynergy ':cached_attributes'
@@ -49,6 +50,8 @@ This synopsis only lists the major methods.
 
 =cut 
 
+use strict;
+
 use base qw(Class::Accessor::Fast);
 __PACKAGE__->mk_ro_accessors(qw/objectname ccm name version cvtype instance/);
 
@@ -66,7 +69,14 @@ use overload
 my $have_weaken = eval "use Scalar::Util qw(weaken); 1";
 
 
+my %cvtype2subclass = 
+( 
+    project	=> "Project",
+);
+
+
 # VCS::CMSynergy::Object->new(ccm, name, version, cvtype, instance)
+# factory method
 sub new
 {
     unless (@_ == 6)
@@ -87,6 +97,12 @@ sub new
     $fields{ccm} = $ccm;
     Scalar::Util::weaken($fields{ccm}) if $have_weaken;
     $fields{acache} = {} if VCS::CMSynergy::use_cached_attributes();
+
+    if (my $subclass = $cvtype2subclass{$fields{cvtype}})
+    {
+	require "VCS/CMSynergy/$subclass.pm";
+	$class = "VCS::CMSynergy::$subclass";
+    }
 
     my $self;
     if (VCS::CMSynergy::use_tied_objects())
@@ -155,8 +171,8 @@ sub set_attribute
 
 sub create_attribute
 {
-    my ($self, $attr_name, $type, $value) = @_;
     _usage(4, undef, '$name, $type, $value', \@_);
+    my ($self, $attr_name, $type, $value) = @_;
     
     my $rc = $self->ccm->create_attribute($attr_name, $type, $value, $self);
 
@@ -168,8 +184,8 @@ sub create_attribute
 
 sub delete_attribute
 {
-    my ($self, $attr_name) = @_;
     _usage(2, undef, '$name', \@_);
+    my ($self, $attr_name) = @_;
 
     my $rc = $self->ccm->delete_attribute($attr_name, $self);
 
@@ -182,8 +198,9 @@ sub delete_attribute
 
 sub copy_attribute
 {
-    my ($self, $names, @to_file_specs) = @_;
     _usage(3, undef, '{ $name | \\@names }, $to_file_spec...', \@_);
+    my ($self, $names, @to_file_specs) = @_;
+
     # NOTE: no $flags allowed, because honouring them would need
     # a project traversal to update or invalidate attribute caches
 
@@ -256,9 +273,10 @@ sub exists
 
 sub property
 {
-    my ($self, $keyword) = @_;
-    my $props = $self->ccm->property($keyword, $self);
-    $self->_update_acache(UNIVERSAL::isa($keyword, 'ARRAY') ? $props : { $keyword => $props });
+    my ($self, $keyword_s) = @_;
+
+    my $props = $self->ccm->property($keyword_s, $self);
+    $self->_update_acache(UNIVERSAL::isa($keyword_s, 'ARRAY') ? $props : { $keyword_s => $props });
     return $props;
 }
 
@@ -276,21 +294,6 @@ sub cvid
     return $self->_private->{cvid} ||= $self->property('cvid');
 }
 
-
-sub recursive_is_member_of
-{
-    my $self = shift;
-    return $self->ccm->query_object_with_attributes(
-	"recursive_is_member_of('$self',depth)", @_);
-}
-
-
-sub hierarchy_project_members
-{
-    my $self = shift;
-    return $self->ccm->query_object_with_attributes(
-	"hierarchy_project_members('$self',depth)", @_);
-}
 
 
 # $obj->is_foo_of: short for $ccm->query_object({is_foo_of => [ $obj ]})
@@ -311,7 +314,7 @@ sub AUTOLOAD
 
     if ($method =~ /^(is_.*_of|has_.*)$/)
     {
-	return $this->ccm->query_object_with_attributes("$method('$this')", @_);
+	return $this->ccm->query_object("$method('$this')", @_);
     }
     croak("Can't locate object method \"$method\" via class \"$class\"");
 }
@@ -478,10 +481,12 @@ in the CM Synergy database (without causing an exception if it doesn't).
 =head2 property
 
   $value = $obj->property($keyword);
+  $hash = $obj->property(\@keywords);
 
 Convenience wrapper for L<VCS::CMSynergy/property>, equivalent to
 
-  $value = $ccm->property($keyword => $obj);
+  $value = $ccm->property($keyword, $obj);
+  $hash = $ccm->property(\@keywords, $obj);
 
 =head2 displayname, cvid
 
@@ -493,30 +498,9 @@ C<< $obj->property("cvid") >>, resp. However, these two methods
 caches their return value in the C<VCS::CMSynergy::Object>
 (because it is immutable).
 
-=head1 OBJECT RELATIONS
+=head1 is_RELATION_of, has_RELATION
 
-=head2 recursive_is_member_of, hierarchy_project_members
-
-These are convenience methods to enumerate recursively all members
-of a project or just the sub projects. Obviously it only makes
-sense to invoke these methods on a C<VCS::CMSynergy::Object> 
-of cvtype "project".
-
-  $proj->recursive_is_member_of
-  $proj->hierarchy_project_members
-
-are exactly the same as
-
-  $proj->ccm->query_object("recursive_is_member_of('$proj',depth)")
-  $proj->ccm->query_object("hierarchy_project_members('$proj',depth)")
-
-If you supply extra arguments then C<query_object_with_attributes>
-is called instead of C<query_object> with these extra arguments.
-
-=head2 is_RELATION_of, has_RELATION
-
-  # assume $task is a VCS::CMSynergy::Object with cvtype "task"
-  $related_objects = $task->is_associated_cv_of;
+  $tasks = $obj->has_associated_cv;
 
 These are convenience methods to quickly enumerate all objects that
 are somehow related to the invoking object:
@@ -529,8 +513,8 @@ are exactly the same as
   $obj->ccm->query_object("is_RELATION_of('$obj')")
   $obj->ccm->query_object("has_RELATION('$obj')")
 
-If you supply extra arguments then C<query_object_with_attributes>
-is called instead of C<query_object> with these extra arguments.
+If you supply extra arguments then these are passed down
+to L<VCS::CMSynergy/query_object> as additional keywords.
 
 See the CM Synergy documentation for the built-in relations. Note that it's
 not considered an error to use a non-existing relation, the methods

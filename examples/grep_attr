@@ -103,7 +103,7 @@ Roderich Schupp, argumentum GmbH <schupp@argumentum.de>
 
 use Getopt::Long qw(:config bundling);
 use Pod::Usage;
-use VCS::CMSynergy ':cached_attributes';
+use VCS::CMSynergy 1.27 ':cached_attributes';
 use VCS::CMSynergy::Helper; 
 use strict;
 
@@ -159,7 +159,7 @@ my @objects =  map { $ccm->object($_) } @ARGV;
 push @objects,
     @{ $opts->{s} ? 
 	$ccm->query_object($opts->{q}) :
-	$ccm->query_object_with_attributes($opts->{q}, $attribute) }
+	$ccm->query_object($opts->{q}, $attribute) }
     if defined $opts->{q};
 
 grep_attr($_, $_->get_attribute($attribute)) foreach @objects;
