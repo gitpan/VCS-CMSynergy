@@ -1,6 +1,6 @@
 package VCS::CMSynergy::ObjectTieHash;
 
-our $VERSION = do { (my $v = q$Revision: 307 $) =~ s/^.*:\s*//; };
+our $VERSION = do { (my $v = q$Revision: 325 $) =~ s/^.*:\s*//; $v };
 
 use base 'VCS::CMSynergy::Object';
 
