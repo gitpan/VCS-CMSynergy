@@ -1,6 +1,6 @@
 package VCS::CMSynergy::Client;
 
-our $VERSION = do { (my $v = q%version: 28 %) =~ s/.*://; sprintf("%d.%02d", split(/\./, $v), 0) };
+our $VERSION = do { (my $v = q$Revision: 321 $) =~ s/^.*:\s*//; };
 
 =head1 NAME
 
@@ -51,6 +51,7 @@ our @ISA = qw(Exporter);
 our @EXPORT_OK = qw(
     is_win32 _pathsep $Debug $Error $Ccm_command
     _exitstatus _error _usage);
+sub _usage(\@$$$);
 
 {
     $Debug = $ENV{CMSYNERGY_TRACE} || 0;
@@ -127,9 +128,11 @@ sub new
 
 sub _memoize_method 
 {
+    _usage(@_, 3, 3, '$class, $method, $code');
+
     my ($class, $method, $code) = @_; 
-    _usage(3, 3, '$class, $method, $code', \@_);
-    croak("`$code' is not a code ref") unless ref $code eq "CODE";
+    croak(__PACKAGE__.qq[::_memoize_method: "$code" must be a CODE ref]) 
+	unless ref $code eq "CODE";
     my $slot = $method;
 
     no strict 'refs';
@@ -168,7 +171,7 @@ sub ccm						# class/instance method
 }
 
 
-my $ccm_prompt = qr/^ccm> /;		# NOTE the trailing blank
+my $ccm_prompt = qr/^ccm> /m;		# NOTE the trailing blank
 
 sub _ccm
 {
@@ -349,17 +352,18 @@ sub _exitstatus	{ return $_[0] << 8; }
 sub _error	{ return (_exitstatus(255), "", $_[0]) }
 
 # helper: check usage
-# check min ($minargs) and max ($maxargs) number of arguments 
-# (numbers include $self); use $maxargs=undef for unlimited arguments;
+# check min ($minargs) and max ($maxargs) number of arguments;
+# use $maxargs=undef for unlimited arguments;
+# for methods, you should shift $self off @_ before calling _usage();
 # croak with message constructed from $usage
-sub _usage
+sub _usage(\@$$$)
 {
-    my ($minargs, $maxargs, $usage, $argsref) = @_;
-    return if $minargs <= @$argsref && (!defined $maxargs || @$argsref <= $maxargs);
+    my ($args, $minargs, $maxargs, $usage) = @_;
+    return 1 if $minargs <= @$args && (!defined $maxargs || @$args <= $maxargs);
     my $fullname = (caller(1))[3];
     (my $method = $fullname) =~ s/^.*:://;
-    croak("$fullname: invalid number of arguments" .
-          "\n  usage: \$ccm->${method}(${usage})");
+    croak("$fullname: called with invalid number of arguments" .
+          "\n  should be $usage");
 }
 
 sub error
@@ -605,7 +609,6 @@ sub trace_msg
 sub set_error 
 {
     my ($this, $error, $method, $rv, @rv) = @_;
-    $method = (caller(1))[3] unless defined $method;
 
     $Error = $this->{error} = $error;
 
@@ -613,6 +616,20 @@ sub set_error
     # consider the error handled if it returns true
     my $handler = $this->{HandleError};
     return wantarray ? @rv : $rv if $handler and &$handler($error, $this, $rv, @rv);
+
+    # unless $method was explicitly specified, use our caller 
+    # except skip private methods of VCS::CMsynergy... packages
+    unless (defined $method)
+    {
+	$method = (caller(0))[3];
+	for (my $n = 1;; $n++)
+	{
+	    my $next = (caller($n))[3];
+	    last unless defined $next;
+	    $method = $next;
+	    last unless $method =~ /^VCS::CMSynergy.*::_\w*$/;
+	}
+    }
 
     my $msg = "$method: $error";
     croak($msg) if $this->{RaiseError};	

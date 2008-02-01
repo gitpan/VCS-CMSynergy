@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 
-# %version: 14 %
+# $Revision: 307 $
 
 use inc::Module::Install;
 use Config;

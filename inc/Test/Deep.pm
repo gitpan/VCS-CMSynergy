@@ -22,11 +22,11 @@ use Data::Dumper qw(Dumper);
 
 use vars qw(
 	$VERSION @EXPORT @EXPORT_OK @ISA
-	$Stack %Compared $CompareCache
+	$Stack %Compared $CompareCache %WrapCache
 	$Snobby $Expects $DNE $DNE_ADDR $Shallow
 );
 
-$VERSION = '0.093';
+$VERSION = '0.099';
 
 require Exporter;
 @ISA = qw( Exporter );
@@ -44,8 +44,6 @@ $Expects = 0; # are we comparing got vs expect or expect vs expect
 
 $DNE = \"";
 $DNE_ADDR = Scalar::Util::refaddr($DNE);
-
-my %WrapCache;
 
 # if no sub name is supplied then we use the package name in lower case
 my %constructors = (
@@ -106,30 +104,37 @@ sub cmp_deeply
 {
 	my ($d1, $d2, $name) = @_;
 
-	local $Stack = Test::Deep::Stack->new;
-	local $CompareCache = Test::Deep::Cache->new;
-
-	my $ok = descend($d1, $d2);
+	my ($ok, $stack) = cmp_details($d1, $d2);
 
 	if (not $Test->ok($ok, $name))
 	{
-		my $diag = deep_diag($Stack);
+		my $diag = deep_diag($stack);
 		$Test->diag($diag);
 	}
 
 	return $ok;
 }
 
-sub eq_deeply
+sub cmp_details
 {
-	my ($d1, $d2, $name) = @_;
+	my ($d1, $d2) = @_;
 
 	local $Stack = Test::Deep::Stack->new;
 	local $CompareCache = Test::Deep::Cache->new;
+	local %WrapCache;
 
 	my $ok = descend($d1, $d2);
 
-	return $ok;
+	return ($ok, $Stack);
+}
+
+sub eq_deeply
+{
+	my ($d1, $d2) = @_;
+
+	my ($ok) = cmp_details($d1, $d2);
+
+	return $ok
 }
 
 sub eq_deeply_cache
@@ -156,6 +161,10 @@ sub eq_deeply_cache
 sub deep_diag
 {
 	my $stack = shift;
+	# ick! incArrow and other things expect the stack has to be visible
+	# in a well known place . TODO clean this up
+	local $Stack = $stack;
+
 	my $where = render_stack('$data', $stack);
 
 	confess "No stack to diagnose" unless $stack;
@@ -383,6 +392,10 @@ sub requireclass
 
 	return Test::Deep::Class->new(1, $val);
 }
+
+# docs and export say this is call useclass, doh!
+
+*useclass = \&requireclass;
 
 sub noclass
 {

@@ -1,6 +1,6 @@
 package VCS::CMSynergy::Project;
 
-our $VERSION = do { (my $v = q%version: 8 %) =~ s/.*://; sprintf("%d.%02d", split(/\./, $v), 0) };
+our $VERSION = do { (my $v = q$Revision: 313 $) =~ s/^.*:\s*//; };
 
 =head1 NAME
 
@@ -284,9 +284,10 @@ my %traverse_opts =
 
 sub traverse
 {
-    _usage(2, 3, '{ \\&wanted | \\%wanted } [, $dir_object]', \@_);
-    my ($self, $wanted, $dir) = @_;
+    my $self = shift;
+    _usage(@_, 1, 2, '{ \\&wanted | \\%wanted } [, $dir_object]');
 
+    my ($wanted, $dir) = @_;
     if (ref $wanted eq 'CODE')
     {
 	$wanted = { wanted => $wanted };
@@ -438,11 +439,11 @@ hash reference. Possible keys are:
 
 =over 4
 
-=item C<subprojects>
+=item C<subprojects> (boolean)
 
 whether to list members of sub projects (recursively), default: false
 
-=item C<pathsep>
+=item C<pathsep> (string)
 
 separator to use for the workarea pathnames, default: the platform's
 native path separator
@@ -493,16 +494,16 @@ sub get_member_info_object
 {
     my $self = shift;
     my $opts = @_ && ref $_[-1] eq "HASH" ? pop : {};
-    return $self->_get_member_info([ object => @_ ], $opts, 1);
+    return $self->_get_member_info(\@_, $opts, 1);
 }
 
 # private method: wrapper for get_member_info from PC integrations intlib.a
 # if $row_object is true, returns objects, otherwise hashes
 sub _get_member_info
 {
-    my ($self, $keywords, $opts, $row_object) = @_;
+    my ($self, $keywords, $opts, $want_row_object) = @_;
 
-    my $want = VCS::CMSynergy::_want($row_object, $keywords);
+    my $want = VCS::CMSynergy::_want($want_row_object, $keywords);
 
     # NOTE: $RS is at the end (because get_member_info _prepends_ the path)
     my $format = $VCS::CMSynergy::FS . join($VCS::CMSynergy::FS, values %$want) . $VCS::CMSynergy::RS;	
@@ -531,7 +532,7 @@ sub _get_member_info
 	substr($path, 0, $wa_path_len) = "" if $wa_path_len;
 	$path =~ s/\Q$_pathsep\E/$opts->{pathsep}/g if $opts->{pathsep};
 
-	$result{$path} = $self->ccm->_parse_query_result($want, \@cols, $row_object);
+	$result{$path} = $self->ccm->_parse_query_result($want, \@cols, $want_row_object);
     }
 
     return \%result;
@@ -564,18 +565,20 @@ to L<VCS::CMSynergy/query_object> as additional keywords.
 
 sub recursive_is_member_of
 {
-    _usage(1, undef, '[{ $order_spec | undef }, @keywords]', \@_);
-    my ($self, $order_spec) = splice @_, 0, 2;
-    $order_spec ||= "none";
+    my $self = shift;
+    _usage(@_, 0, undef, '[{ $order_spec | undef }, @keywords]');
+
+    my $order_spec = shift || "none";
     return $self->ccm->query_object("recursive_is_member_of('$self',$order_spec)", @_);
 }
 
 
 sub hierarchy_project_members
 {
-    _usage(1, undef, '[{ $order_spec | undef }, @keywords]', \@_);
-    my ($self, $order_spec) = splice @_, 0, 2;
-    $order_spec ||= "none";
+    my $self = shift;
+    _usage(@_, 0, undef, '[{ $order_spec | undef }, @keywords]');
+
+    my $order_spec = shift || "none";
     return $self->ccm->query_object("hierarchy_project_members('$self',$order_spec)", @_);
 }
 
@@ -604,9 +607,10 @@ to L<VCS::CMSynergy/query_object> as additional keywords.
 
 sub is_child_of
 {
-    _usage(1, undef, '[{ $dir_object | undef }, @keywords]', \@_);
-    my ($self, $dir) = splice @_, 0, 2;
+    my $self = shift;
+    _usage(@_, 0, undef, '[{ $dir_object | undef }, @keywords]');
 
+    my $dir = shift;
     if (defined $dir)
     {
 	croak(__PACKAGE__."::is_child_of: argument 1 ($dir) must be a VCS::CMSynergy::Object")
@@ -636,10 +640,116 @@ is exactly the same as
 
 sub object_from_proj_ref
 {
-    _usage(2, undef, '{ $path | \\@path_components }, @keywords', \@_);
-    my ($self, $path) = splice @_, 0, 2;
+    my $self = shift;
+    _usage(@_, 1, undef, '{ $path | \\@path_components }, @keywords');
 
-    return $self->ccm->object_from_proj_ref($path, $self);
+    my $path = shift;
+    return $self->ccm->object_from_proj_ref($path, $self, @_);
+}
+
+
+=head1 MISCELLANEOUS
+
+=head2 show_reconfigure_properties
+
+  $objects = $proj->show_reconfigure_properties($what, @keywords, \%options);
+
+Shows information about the project's reconfigure properties
+depending on C<$what>. C<@keywords> and C<\%options> are optional.
+Returns a reference to an array of C<VCS::CMSynergy::Objects>.
+
+C<$what> must be one of the following strings:
+
+=over 4
+
+=item C<"tasks">
+
+shows tasks that are directly in the project’s reconfigure properties
+
+=item C<"folders">
+
+shows folders that are in the project’s reconfigure properties
+
+=item C<"tasks_and_folders">
+
+shows tasks and folders that are directly in the project’s 
+reconfigure properties
+
+=item C<"all_tasks">
+
+shows all tasks that are directly or indirectly in the project’s 
+reconfigure properties (indirectly means the task is in a folder 
+that is in the project’s reconfigure properties) 
+
+=item C<"objects">
+
+shows objects in the task that are either directly or indirectly
+in the project’s reconfigure properties
+
+=back
+
+See the description of  L<VCS::CMSynergy/query_hashref> or 
+L<VCS::CMSynergy/query_object>, resp., for the meaning of 
+C<@keywords>. 
+
+C<show_reconfigure_properties> also accepts an optional trailing  
+hash reference. Possible keys are:
+
+=over 4
+
+=item C<subprojects> (boolean)
+
+whether to include the reconfigure properties 
+of sub projects (recursively), default: false
+
+=item C<automatic> (boolean)
+
+whether automatic tasks are to be shown, default: false; 
+this option is only relevant if C<$what> is "tasks", "tasks_and_folders" 
+or "all_tasks"
+
+=back
+
+Example: 
+
+  $tasks = $proj->show_reconfigure_properties(
+	     all_tasks => qw/task_synopsis completion_date/, 
+	     { subprojects => 1, automatic => 0 });
+
+=cut 
+
+sub show_reconfigure_properties
+{
+    my $self = shift;
+    my $opts = @_ && ref $_[-1] eq "HASH" ? pop : {};
+    _usage(@_, 1, undef, '$what [, @keywords] [, \%options]');
+
+    my $what = shift;
+    croak(__PACKAGE__."::show_reconfigure_properties:".
+	  " argument 1 (what) must be one of tasks|folders|tasks_and_folders|all_tasks|objects")
+	unless $what =~ /^(tasks|folders|tasks_and_folders|all_tasks|objects)$/;
+
+    my $want = VCS::CMSynergy::_want(1, \@_);
+    my $format = $VCS::CMSynergy::RS . join($VCS::CMSynergy::FS, values %$want) . $VCS::CMSynergy::FS;
+
+    my @rp = qw/reconfigure_properties -u -ns/;
+    push @rp, $opts->{automatic} ? "-auto" : "-no_auto" if $what =~ /tasks/;
+    push @rp, "-r" if $opts->{subprojects};
+
+    my ($rc, $out, $err) = $self->ccm->_ccm(
+	@rp, -format => $format, -show => $what, $self);
+    return $self->set_error($err || $out) unless $rc == 0;
+    # NOTE: if the reconf properties are empty, Synergy shows the string "None"
+    return [ ] if $out eq "None";
+
+    my @result;
+    foreach (split(/\Q${VCS::CMSynergy::RS}\E/, $out))	# split into records 
+    {
+	next unless length($_);				# skip empty leading record
+	my @cols = split(/\Q${VCS::CMSynergy::FS}\E/, $_, -1);	# don't strip empty trailing fields
+	push @result, $self->ccm->_parse_query_result($want, \@cols, 1);
+    }
+    return \@result;
 }
 
 
