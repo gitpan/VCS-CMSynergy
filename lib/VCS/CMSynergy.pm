@@ -1,8 +1,8 @@
 package VCS::CMSynergy;
 
-# $Revision: 325 $
+# $Revision: 329 $
 
-our $VERSION = '1.32';
+our $VERSION = '1.33';
 
 use 5.006_000;				# i.e. v5.6.0
 use strict;
