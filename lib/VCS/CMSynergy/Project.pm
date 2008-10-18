@@ -1,6 +1,6 @@
 package VCS::CMSynergy::Project;
 
-our $VERSION = do { (my $v = q$Revision: 325 $) =~ s/^.*:\s*//; $v };
+our $VERSION = do { (my $v = q$Revision: 344 $) =~ s/^.*:\s*//; $v };
 
 =head1 NAME
 
@@ -236,15 +236,20 @@ entries are sorted by name and are intended according to their depth:
 =cut
 
 # tied array class that acts as a readonly front to a real array
+# NOTE: TIEARRAY expects as first parameter a closure that 
+# returns a reference to the "back" array. Storing the array reference 
+# itself in the tied arraay doesn't work when the "back" array is local'ized.
 {
     package Tie::ReadonlyArray;	
 
     use Carp;
 
     sub TIEARRAY	{ bless $_[1], $_[0]; }
-    sub FETCH		{ $_[0]->[$_[1]]; }
-    sub FETCHSIZE	{ scalar @{$_[0]}; }
-    sub AUTOLOAD	{ croak "attempt to modify a readonly array"; }
+    sub FETCH		{ $_[0]->()->[$_[1]]; }
+    sub FETCHSIZE	{ scalar @{$_[0]->()}; }
+    *STORE = *STORESIZE = *EXTEND = *CLEAR = *UNTIE
+	= *PUSH = *POP = *UNSHIFT = *SHIFT = *SPLICE 
+	= sub { croak "attempt to modify a readonly array"; };
 }
 
 
@@ -255,8 +260,8 @@ entries are sorted by name and are intended according to their depth:
     our (@_dirs, @_projects);			# private
 
     our (@dirs, @projects, $prune);		# public
-    tie @dirs,		"Tie::ReadonlyArray" => \@_dirs;
-    tie @projects,	"Tie::ReadonlyArray" => \@_projects;
+    tie @dirs,	   "Tie::ReadonlyArray" => sub { \@_dirs };
+    tie @projects, "Tie::ReadonlyArray" => sub { \@_projects };
 
     sub path 
     { 
@@ -280,6 +285,8 @@ my %traverse_opts =
     preprocess	=> "CODE",
     postprocess	=> "CODE",
     attributes	=> "ARRAY",
+    bydepth	=> 0,
+    subprojects	=> 0,
 );
 
 sub traverse
@@ -294,20 +301,22 @@ sub traverse
     }
     elsif (ref $wanted eq 'HASH')
     {
-	croak(__PACKAGE__."::traverse: argument 1 (wanted hash ref): option `wanted' is mandatory")
-	    unless exists $wanted->{wanted};
-	while (my ($key, $type) = each %traverse_opts)
+	while (my ($opt, $value) = each %$wanted)
 	{
-	    next unless exists $wanted->{$key};
-	    croak(__PACKAGE__."::traverse: argument 1 (wanted hash ref): option `$key' must be a $type: $wanted->{$key}")
-		unless UNIVERSAL::isa($wanted->{$key}, $type);
+	    croak(__PACKAGE__.qq[::traverse: argument 1 ("wanted"): unrecognized option "$opt"])
+		unless exists $traverse_opts{$opt};
+
+	    my $type = $traverse_opts{$opt} or next;
+	    croak(__PACKAGE__.qq[::traverse: argument 1 ("wanted"): option "$opt" must be a $type: $value])
+		unless UNIVERSAL::isa($value, $type);
 	}
+	croak(__PACKAGE__."::traverse: argument 1 (wanted hash ref): option `wanted' is mandatory")
+	    unless $wanted->{wanted};
     }
     else
     {
 	croak(__PACKAGE__."::traverse: argument 1 (wanted) must be a CODE or HASH ref: $wanted");
     }
-    $wanted->{attributes} ||= [];
 
     if (defined $dir)
     {
@@ -326,7 +335,7 @@ sub traverse
 		version		=> $dir->version,
 		is_member_of	=> [ $self ]
 	    },
-	    @{ $wanted->{attributes} });
+	    @{ $wanted->{attributes} || [] });
 	return $self->ccm->set_error("directory `$dir' doesn't exist or isn't a member of `$self'")
 	    unless @$result;
 	$dir = $result->[0];

@@ -1,8 +1,8 @@
 package VCS::CMSynergy;
 
-# $Revision: 329 $
+# $Revision: 346 $
 
-our $VERSION = '1.33';
+our $VERSION = '1.34';
 
 use 5.006_000;				# i.e. v5.6.0
 use strict;
@@ -115,7 +115,7 @@ sub _start
     my @start = qw/start -m -q -nogui/;
     while (my ($arg, $value) = each %args)
     {
-	croak(__PACKAGE__.q[::object: unrecognized argument "$arg"]) 
+	croak(__PACKAGE__.qq[::_start: unrecognized argument "$arg"]) 
 	    unless exists $start_opts{$arg};
 
 	$self->{$arg} = $value unless $arg eq "password";
@@ -237,7 +237,7 @@ sub _start
 	$self->{delimiter} = $out;
 
 	$self->{objectname_rx} = 
-	    qr/^(.*?)\Q$self->{delimiter}\E(.*?):(.*?):(.*?)$/;
+	    qr/^(.*?)(?:\Q$self->{delimiter}\E|:)(.*?):(.*?):(.*?)$/;
 					# -> (name, version, cvtype, instance)
 	$self->{finduse_rx} = 
 	    qr/^\t(.*?)\Q$self->{delimiter}\E.*?\@(.*?)$/;
@@ -507,17 +507,11 @@ sub _query
 # doesn't accept these where a "file_spec" is expected 
 # (at least on Unix, because they contain slashes). 
 # Hence rewrite these fullnames to objectnames.
-# Arrggh. Some moron implemented a bogus "objectname" acc_method 
-# for release objects (i.e. type "releasedef") that
-# emits ":" as the first separator. These objectnames aren't
-# accepted as file_specs either. Rewrite them, too.
 sub _fullname2objectname
 {
     my ($self, $fullname) = @_;
     $fullname =~ s{^(.*?)/(.*?)/(.*?)/(.*?)$}
 	          {$3$self->{delimiter}$4:$2:$1};
-    $fullname =~ s{^(.*?):(.*?):releasedef:(.*?)$}
-	          {$1$self->{delimiter}$2:releasedef:$3};
     return $fullname;
 }
 
@@ -526,51 +520,68 @@ sub _fullname2objectname
 # and %displayname) and the table in attribute "pseudo_attrs" 
 # of base-1:model:base.
 
-# NOTE: out methods are never called with $_[1] undef
+# rewrite rules for complex pseudo attributes
+# - key is the name of the pseudo attribute
+# - value is a hash consisting of:
+#   format: the string to use in a ccm format option to get the raw value
+#   rewrite: a sub that will be called with two arguments: a VCS::Synergy
+#     session and the raw value; it must return the converted value
+#     NOTE: the raw value will always be defined, because undef ("<void>")
+#       raw values are automatically passed thru
+#   row_object_ok: whether this pseudo attribute allowed when the final
+#     answer is in terms of VCS::CMSynergy::Objects (e.g. query_object())
 my %_rewrite_rule = 
 (
     objectname => 
     {
-	in		=> "%objectname",
-	out		=> sub { $_[0]->_fullname2objectname($_[1]); },
+	format		=> "%objectname",
+	rewrite		=> sub { my ($self, $value) = @_;
+	                         $self->_fullname2objectname($value); },
 	row_object_ok	=> 1,
     },
     object => 
     {
-	in		=> "%objectname",
-	out		=> sub { $_[0]->object($_[0]->_fullname2objectname($_[1])); },
+	format		=> "%objectname",
+	rewrite		=> sub { my ($self, $value) = @_;
+				 $self->object($self->_fullname2objectname($value)); },
 	row_object_ok	=> 1,
     },
     task_objects => 
     {
-	in		=> "%task",
-	out		=> sub { [ map { $_[0]->task_object($_) } split(/,/, $_[1]) ]; },
+	format		=> "%task",
+	rewrite		=> sub { my ($self, $value) = @_;
+				 [ map { $self->task_object($_) } 
+				       split(/,/, $value) ]; },
 	row_object_ok	=> 0,
     },
     cr_objects =>
     {
-	in		=> "%change_request",
-	out		=> sub { [ map { $_[0]->cr_object($_) } split(/,/, $_[1]) ]; },
+	format		=> "%change_request",
+	rewrite		=> sub { my ($self, $value) = @_;
+				 [ map { $self->cr_object($_) } 
+				       split(/,/, $value) ]; },
 	row_object_ok	=> 0,
     },
     baseline_project =>
     {
-	in		=> "%baseline",
-	out		=> sub { $_[0]->project_object($_[0]); },
+	format		=> "%baseline",
+	rewrite		=> sub { my ($self, $value) = @_;
+				 $self->project_object($value); },
 	row_object_ok	=> 0,
     },
     baseline_object =>
     {
-	in		=> "%in_baseline",
-	out		=> sub { $_[0]->baseline_object($_[1]); },
+	format		=> "%in_baseline",
+	rewrite		=> sub { my ($self, $value) = @_;
+				 $self->baseline_object($value); },
 	row_object_ok	=> 0,
     },
 );
 
 
 # helper (not a method): build "want" array from keyword list (common case)
-# NOTE: if $want_row_object is true, key "object" will be automatically
-#       added to the returned hash
+# NOTE: if $want_row_object is true, the keyword "object" will be 
+#   automatically added to the returned hash
 sub _want
 {
     my ($want_row_object, $keywords) = @_;
@@ -584,7 +595,7 @@ sub _want
 	{
 	    croak(__PACKAGE__.qq[::_want: keyword "$_" not allowed when ROW_OBJECT wanted]) 
 		if $want_row_object && !$rule->{row_object_ok};
-	    $want{$_} = $rule->{in};
+	    $want{$_} = $rule->{format};
 	}
     }
 
@@ -598,16 +609,17 @@ sub _parse_query_result
     my %row;
     
     # strip trailing newline (for consistency with get_attribute()),
-    # translate "<void>" to undef and fill into correct slots;
-    # @$cols are in the same order as keys %$want
+    # translate "<void>" to undef and fill into correct slots
+    # NOTE: per construction, @$cols are in the same order as keys %$want
     @row{keys %$want} = map { s/\n\z//; /^<void>$/ ? undef : $_ } @$cols;
     
     # handle special keywords
     foreach (keys %$want)
     {
-	if ($_rewrite_rule{$_} && defined $row{$_})
+	next unless defined $row{$_};
+	if (my $rule = $_rewrite_rule{$_})
 	{
-	    $row{$_} = $_rewrite_rule{$_}->{out}->($self, $row{$_});
+	    $row{$_} = $rule->{rewrite}->($self, $row{$_});
 	}
     }
 
@@ -824,35 +836,42 @@ sub finduse
     # the command exits with status 1 and produces no output on either 
     # stdout and stderr. (This is the same behaviour as for `ccm query ...'.) 
     # We will not produce an error in any case. However, the returned array
-    # may contain fewer elements than the number of file_spec arguments.
-
-    if ($rc == 0)
-    {
-	my (@result, $uses);
-	foreach (split(/\n/, $out))
-	{
-	    # ignore complaints about non-existing objects 
-	    # and the dummy "use" line printed if object is not used anywhere
-
-	    next if /Object version could not be identified|Object is not used in scope/;
-
-	    # a usage line is matched by finduse_rx
-	    if (/$self->{finduse_rx}/)
-	    {
-		my ($path, $project) = ($1, $2);
-		$uses->{$self->_projspec2objectname($project)} = $path;
-		next;
-	    }
-
-	    # otherwise the line describes an object satisfying the query
-	    # in the format given by option `Object_format' (default:
-	    # "%displayname %status %owner %type %project %instance %task")
-	    push(@result, [ $_, $uses = {} ]);
-	}
-	return \@result;
-    }
+    # will contain undef in postions corresponding to non-existing objects.
     return [ ] if $rc == _exitstatus(1) and $out eq "" and $err eq "";
-    return $self->set_error($err || $out);
+    return $self->set_error($err || $out) unless $rc == 0;
+
+    my (@result, $uses);
+    foreach (split(/\n/, $out))
+    {
+	# push undef for any non-existing objects 
+	if (/Object version could not be identified/)
+	{
+	    push @result, undef;
+	    next;
+	}
+
+	# ignore the dummy "use" line printed if object is not used anywhere
+	if (/Object is not used in scope/)
+	{
+	    next;
+	}
+
+	# a usage line is matched by finduse_rx
+	if (/$self->{finduse_rx}/)
+	{
+	    my ($path, $project) = ($1, $2);
+	    $uses->{$self->_projspec2objectname($project)} = $path;
+	    next;
+	}
+
+	# otherwise the line describes an object satisfying the query
+	# in the format given by option `Object_format' (default:
+	# "%displayname %status %owner %type %project %instance %task");
+	# push it with an empty hash of uses (will be filled in by the
+	# following lines)
+	push(@result, [ $_, $uses = {} ]);
+    }
+    return \@result;
 }
 
 
@@ -993,37 +1012,37 @@ sub project_tree
     _usage(@_, 1, undef, '\\%options, @projects');
 
     my ($options, @projects) = @_;
-    $options ||= {};
+    $options = {} unless defined $options;
     croak(__PACKAGE__.qq[::project_tree: argument 1 ("options") must be a HASH ref: $options])
 	unless ref $options eq "HASH";
-    $options->{attributes} ||= [];
-    my $mark_projects = delete $options->{mark_projects};
-    # NOTE: $options->{attributes} will be checked by traverse() below
 
-    my %tree;
-    my $tag = 0;
-    foreach my $proj (
-	map { ref $_ ?  $_ : $self->project_object($_) } @projects)
+    my %wanted = %$options;	# make a copy, because we're modifying it below
+    my $mark_projects = delete $wanted{mark_projects};
+    my $pathsep = delete $wanted{pathsep};
+    # NOTE: all other options are passed thru to traverse() 
+    # (and get checked there)
+
+    my (%tree, $tag);		# referenced in closure below
+    $wanted{wanted} = sub
     {
-	$proj->traverse(
-	    { 
-		subprojects	=> $options->{subprojects},
-		attributes	=> $options->{attributes},
-		wanted		=> sub
-		{
-		    # skip projects unless "mark_projects" is in effect
-		    return if $_->is_project && !$mark_projects;
+	# skip projects unless "mark_projects" is in effect
+	return if $_->is_project && !$mark_projects;
 
-		    # store into %tree with relative workarea pathname as the key
-		    # NOTE: VCS::CMSynergy::Traversal::path() has the same
-		    # value when invoked for a project and its top level
-		    # directory; the "||=" below makes sure we dont't overwrite
-		    # the project entry when "mark_projects" is in effect
-		    my $path = VCS::CMSynergy::Traversal::path($options->{pathsep});
-		    @projects == 1 ? $tree{$path} : $tree{$path}->[$tag] ||= $_;
-		},
-	    }) or return;
-	$tag++;
+	# store into %tree with relative workarea pathname as the key
+	# NOTE: VCS::CMSynergy::Traversal::path() has the same
+	# value when invoked for a project and its top level
+	# directory; the "||=" below makes sure we dont't overwrite
+	# the project entry when "mark_projects" is in effect
+	my $path = VCS::CMSynergy::Traversal::path($pathsep);
+	@projects == 1 ? $tree{$path} : $tree{$path}->[$tag] ||= $_;
+    };
+
+    for ($tag = 0; $tag < @projects; $tag++)
+    {
+	my $proj = $projects[$tag];
+	$proj = $self->project_object($proj) unless ref $proj;
+
+	$proj->traverse(\%wanted) or return;
     }
 
     return \%tree;

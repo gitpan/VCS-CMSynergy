@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 
-# $Revision: 327 $
+# $Revision: 346 $
 
 use inc::Module::Install;
 use Config;
@@ -74,13 +74,17 @@ requires	'List::Util'		=> '1.09';
 requires	'Scalar::Util'		=> '1.09';
 requires	'Filesys::CygwinPaths'	=> 0 if $^O eq 'cygwin';
 
-build_requires	'Test::More'		=> 0;
-build_requires	'Test::Deep'		=> '0.093';
-build_requires	'End'			=> 0;
+test_requires	'Test::More'		=> 0;
+test_requires	'Test::Deep'		=> '0.103';
+include		'Test::Deep';
+include		'Test::Deep::*';
+include		'Test::Deep::*::*';
+test_requires	'End'			=> 0;
+include		'End';
 
-include_deps	'Test::More';
-include_deps	'Test::Deep';
-include_deps	'End';
+# --- Build data
+
+install_script	'script/ccm_project_diff';
 
 clean_files	't/zz_*.t';
 
