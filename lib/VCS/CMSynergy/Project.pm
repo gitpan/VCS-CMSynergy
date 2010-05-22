@@ -1,6 +1,9 @@
 package VCS::CMSynergy::Project;
 
-our $VERSION = do { (my $v = q$Revision: 344 $) =~ s/^.*:\s*//; $v };
+# Copyright (c) 2001-2010 argumentum GmbH, 
+# See COPYRIGHT section in VCS/CMSynergy.pod for usage and distribution rights.
+
+our $VERSION = do { (my $v = q$Revision: 381 $) =~ s/^.*:\s*//; $v };
 
 =head1 NAME
 
@@ -101,7 +104,7 @@ returns the filesystem path for C<$_>. It is short for
 
   join($pathsep, map { $_->name } @VCS::CMSynergy::Traversal::dirs, $_) 
 
-where C<$pathsep> is your platforms path separator.
+where C<$pathsep> is your platform's path separator.
 
 The convenience function C<VCS::CMSynergy::Traversal::depth()> returns the
 current depth, where the top level project has depth 0. It is short for
@@ -174,6 +177,11 @@ of C<cvtype> C<dir> or C<project>).
 
 If this option is set, C<traverse>
 will recurse into subprojects. It is "off" by default.
+
+=item C<pathsep> (string)
+
+The path separator to use for C<VCS::CMSynergy::Traversal::path()>.
+The default is your platform's path separator.
 
 =item C<attributes> (array ref)
 
@@ -257,25 +265,21 @@ entries are sorted by name and are intended according to their depth:
 {
     package VCS::CMSynergy::Traversal;
 
-    our (@_dirs, @_projects);			# private
+    # private
+    our (@_dirs, @_projects, $_pathsep, $_catdirs);
 
-    our (@dirs, @projects, $prune);		# public
+    # public
+    our (@dirs, @projects, $prune);		
     tie @dirs,	   "Tie::ReadonlyArray" => sub { \@_dirs };
     tie @projects, "Tie::ReadonlyArray" => sub { \@_projects };
 
-    sub path 
-    { 
-	my ($pathsep) = @_;
-	$pathsep = VCS::CMSynergy::Client::_pathsep unless defined $pathsep;
+    # NOTE:references $_ (the currently traversed object)
+    sub path		{ return @_dirs ? 
+			    $_catdirs.$_pathsep.$_->name : $_->name }
 
-	# NOTE: references $_ (the currently traversed object)
-	return join($pathsep, map { $_->name } @VCS::CMSynergy::Traversal::_dirs, $_); 
-    }
+    sub depth		{ return scalar @_dirs }
 
-    sub depth 
-    { 
-	return scalar @VCS::CMSynergy::Traversal::_dirs; 
-    }
+    sub _catdirs	{ $_catdirs = join($_pathsep, map { $_->name } @_dirs) }
 }
 
 
@@ -285,8 +289,9 @@ my %traverse_opts =
     preprocess	=> "CODE",
     postprocess	=> "CODE",
     attributes	=> "ARRAY",
-    bydepth	=> 0,
-    subprojects	=> 0,
+    bydepth	=> undef,
+    subprojects	=> undef,
+    pathsep	=> undef,
 );
 
 sub traverse
@@ -294,14 +299,17 @@ sub traverse
     my $self = shift;
     _usage(@_, 1, 2, '{ \\&wanted | \\%wanted } [, $dir_object]');
 
-    my ($wanted, $dir) = @_;
-    if (ref $wanted eq 'CODE')
+    my ($arg_wanted, $dir) = @_;
+
+    my %wanted;
+    if (ref $arg_wanted eq 'CODE')
     {
-	$wanted = { wanted => $wanted };
+	%wanted = ( wanted => $arg_wanted );
     }
-    elsif (ref $wanted eq 'HASH')
+    elsif (ref $arg_wanted eq 'HASH')
     {
-	while (my ($opt, $value) = each %$wanted)
+	%wanted = %$arg_wanted;		# make a copy, so we can't inadvertently modify it
+	while (my ($opt, $value) = each %wanted)
 	{
 	    croak(__PACKAGE__.qq[::traverse: argument 1 ("wanted"): unrecognized option "$opt"])
 		unless exists $traverse_opts{$opt};
@@ -311,11 +319,11 @@ sub traverse
 		unless UNIVERSAL::isa($value, $type);
 	}
 	croak(__PACKAGE__."::traverse: argument 1 (wanted hash ref): option `wanted' is mandatory")
-	    unless $wanted->{wanted};
+	    unless $wanted{wanted};
     }
     else
     {
-	croak(__PACKAGE__."::traverse: argument 1 (wanted) must be a CODE or HASH ref: $wanted");
+	croak(__PACKAGE__."::traverse: argument 1 (wanted) must be a CODE or HASH ref: $arg_wanted");
     }
 
     if (defined $dir)
@@ -335,7 +343,7 @@ sub traverse
 		version		=> $dir->version,
 		is_member_of	=> [ $self ]
 	    },
-	    @{ $wanted->{attributes} || [] });
+	    @{ $wanted{attributes} });
 	return $self->ccm->set_error("directory `$dir' doesn't exist or isn't a member of `$self'")
 	    unless @$result;
 	$dir = $result->[0];
@@ -347,7 +355,10 @@ sub traverse
 
     local @VCS::CMSynergy::Traversal::_projects = ($self);
     local @VCS::CMSynergy::Traversal::_dirs = (); 
-    $self->_traverse($wanted, $dir);
+    local $VCS::CMSynergy::Traversal::_pathsep =
+	(delete $wanted{pathsep}) || VCS::CMSynergy::Client::_pathsep;
+
+    $self->_traverse(\%wanted, $dir);
 }
 
 # helper method: grunt work of traverse
@@ -377,6 +388,7 @@ sub _traverse
     }
 
     push @VCS::CMSynergy::Traversal::_dirs, $parent unless $parent->is_project;
+    VCS::CMSynergy::Traversal::_catdirs();
 
     foreach (@$children)			# localizes $_
     {
@@ -397,6 +409,7 @@ sub _traverse
     }
 
     pop @VCS::CMSynergy::Traversal::_dirs unless $parent->is_project;
+    VCS::CMSynergy::Traversal::_catdirs();
     
     if ($wanted->{bydepth}) 
     {
@@ -517,10 +530,10 @@ sub _get_member_info
     # NOTE: $RS is at the end (because get_member_info _prepends_ the path)
     my $format = $VCS::CMSynergy::FS . join($VCS::CMSynergy::FS, values %$want) . $VCS::CMSynergy::RS;	
 
-    my ($rc, $out, $err) = $self->ccm->_ccm(
-	$opts->{subprojects} ? 
-	    qw/get_member_info -recurse/ : qw/get_member_info/,
-	-format => $format, $self);
+    my @cmd =  qw/get_member_info/;
+    push @cmd, "-recurse" if $opts->{subprojects};
+
+    my ($rc, $out, $err) = $self->ccm->_ccm(@cmd, -format => $format, $self);
     return $self->ccm->set_error($err || $out) unless $rc == 0;
 
     my %result;
@@ -741,12 +754,12 @@ sub show_reconfigure_properties
     my $want = VCS::CMSynergy::_want(1, \@_);
     my $format = $VCS::CMSynergy::RS . join($VCS::CMSynergy::FS, values %$want) . $VCS::CMSynergy::FS;
 
-    my @rp = qw/reconfigure_properties -u -ns/;
-    push @rp, $opts->{automatic} ? "-auto" : "-no_auto" if $what =~ /tasks/;
-    push @rp, "-r" if $opts->{subprojects};
+    my @cmd = qw/reconfigure_properties -u -ns/;
+    push @cmd, $opts->{automatic} ? "-auto" : "-no_auto" if $what =~ /tasks/;
+    push @cmd, "-r" if $opts->{subprojects};
 
     my ($rc, $out, $err) = $self->ccm->_ccm(
-	@rp, -format => $format, -show => $what, $self);
+	@cmd, -format => $format, -show => $what, $self);
     return $self->set_error($err || $out) unless $rc == 0;
     # NOTE: if the reconf properties are empty, Synergy shows the string "None"
     return [ ] if $out eq "None";

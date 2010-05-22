@@ -1,6 +1,9 @@
 package VCS::CMSynergy::Object;
 
-our $VERSION = do { (my $v = q$Revision: 342 $) =~ s/^.*:\s*//; $v };
+# Copyright (c) 2001-2010 argumentum GmbH, 
+# See COPYRIGHT section in VCS/CMSynergy.pod for usage and distribution rights.
+
+our $VERSION = do { (my $v = q$Revision: 381 $) =~ s/^.*:\s*//; $v };
 
 =head1 NAME
 
@@ -440,7 +443,7 @@ A convenience wrapper for L<VCS::CMSynergy/cat_object>.
 =head2 mydata
 
 Sometimes it is handy to be able to store some arbitrary data 
-in a C<VCS::CMSynergy::Object>. This method returns a reference
+into a C<VCS::CMSynergy::Object>. This method returns a reference
 to a hash associated with the object. It is totally opaque
 w.r.t. Synergy operations. 
 
@@ -448,8 +451,8 @@ w.r.t. Synergy operations.
 
 =head2 get_attribute, set_attribute
 
-  print $obj->get_attribute($attribute_name);
-  $obj->set_attribute($attribute_name) = "blurfl";
+  $value = $obj->get_attribute($attribute_name);
+  $obj->set_attribute($attribute_name, $value);
 
 These are convenience wrappers for L<VCS::CMSynergy/get_attribute>
 and L<VCS::CMSynergy/set_attribute>, resp., i.e.
@@ -458,7 +461,7 @@ and L<VCS::CMSynergy/set_attribute>, resp., i.e.
 
 is syntactic sugar for
 
-  print $ccm->get_attribute(comment => $obj);
+  print $ccm->get_attribute("comment", $obj);
 
 If you are C<use>ing L<VCS::CMSynergy/:cached_attributes>, 
 these methods maintain a cache
@@ -470,7 +473,7 @@ on the same object.
 
 =head2 create_attribute, delete_attribute
 
-  $obj->create_attribute($attribute_name, $attribute_type);
+  $obj->create_attribute($attribute_name, $attribute_type, $value);
   $obj->delete_attribute($attribute_name);
 
 Convenience wrappers for L<VCS::CMSynergy/create_attribute> and  

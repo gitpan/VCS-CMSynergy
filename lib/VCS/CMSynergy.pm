@@ -1,8 +1,11 @@
 package VCS::CMSynergy;
 
-# $Revision: 346 $
+# Copyright (c) 2001-2010 argumentum GmbH, 
+# See COPYRIGHT section in VCS/CMSynergy.pod for usage and distribution rights.
 
-our $VERSION = '1.34';
+# $Revision: 383 $
+
+our $VERSION = '1.35';
 
 use 5.006_000;				# i.e. v5.6.0
 use strict;
@@ -61,21 +64,6 @@ sub import
     require VCS::CMSynergy::ObjectTieHash if use_tied_objects();
 }
 
-my %start_opts =
-(
-    KeepSession		=> undef,
-    UseCoprocess	=> undef,
-    CCM_ADDR		=> undef,
-    ini_file		=> undef,
-    remote_client	=> undef,
-    database		=> "-d",
-    home		=> "-home",
-    host		=> "-h",
-    password		=> "-pw",
-    role		=> "-r",
-    ui_database_dir	=> "-u",
-    user		=> "-n",
-);
 
 sub new
 {
@@ -90,6 +78,27 @@ sub new
     return $class->_start(VCS::CMSynergy::Client->new(%client_args), %args);
 }
 
+
+# %start_opts: its keys are all valid options that can be
+# passed to VCS::CMSynergy::_start; moreover,
+# if $start_opts{foo} is defined then arg "foo" is automagically
+# passed to "ccm start" as "... $start_opts{foo} $args{foo} ..."
+my %start_opts =
+(
+    KeepSession		=> undef,
+    UseCoprocess	=> undef,
+    CCM_ADDR		=> undef,
+    ini_file		=> undef,
+    remote_client	=> undef,
+    database		=> "-d",
+    home		=> "-home",
+    host		=> "-h",
+    server		=> "-s",
+    password		=> "-pw",
+    role		=> "-r",
+    ui_database_dir	=> "-u",
+    user		=> "-n",
+);
 
 sub _start
 {
@@ -113,6 +122,10 @@ sub _start
     }
 
     my @start = qw/start -m -q -nogui/;
+
+    # FIXME 7.1 web mode:
+    # - in effect when "-s" i.e. $args{server} is specified
+    # - "-f" not allowed
     while (my ($arg, $value) = each %args)
     {
 	croak(__PACKAGE__.qq[::_start: unrecognized argument "$arg"]) 
@@ -142,6 +155,9 @@ sub _start
 	    $self->{user} = 
 		$self->ps(rfc_address => $self->ccm_addr)->[0]->{user};
 
+	    # FIXME not necessary in web mode 
+	    # ccm ps: process (usr_cmd_interface)
+
 	    # create a minimal ini file (see below for an explanation)
 	    (my $inifh, $self->{ini_file}) = tempfile(SUFFIX => ".ini", UNLINK => 0);
 	    $self->{ini_file} = fullwin32path($self->{ini_file}) if $^O eq 'cygwin';
@@ -160,27 +176,31 @@ sub _start
 	return $self->set_error("don't know how to connect to CM Synergy: neither database nor CCM_ADDR specified")
 	    unless $args{database};
 
-	unless (defined $self->{ini_file})
+	unless ($self->{server})        # NOTE: "-f" is illegal in web mode
 	{
-	    if (is_win32)
-	    {
-		# NOTES: 
-		# (1) "ccm start -f nul ..." doesn't work on Windows
-		#     (leads to error from ccm_seng), 
-		#     so use an empty ini_file instead
-		# (2) we can't use UNLINK=>1 with tempfile, because 
-		#     the actual unlink may occur before the session is
-		#     stopped and Windows refuses removing the "busy" file
-		(undef, $self->{ini_file}) = tempfile(SUFFIX => ".ini", UNLINK => 0);
-		$self->{ini_file} = fullwin32path($self->{ini_file}) if $^O eq 'cygwin';
-		push @{ $self->{files_to_unlink} }, $self->{ini_file};
-	    }
-	    else
-	    {
-		$self->{ini_file} = File::Spec->devnull;
-	    }
+            unless (defined $self->{ini_file})
+            {
+                if (is_win32)
+                {
+                    # NOTES: 
+                    # (1) "ccm start -f nul ..." doesn't work on Windows
+                    #     (leads to error from ccm_seng), 
+                    #     so use an empty ini_file instead
+                    # (2) we can't use UNLINK=>1 with tempfile, because 
+                    #     the actual unlink may occur before the session is
+                    #     stopped and Windows refuses removing the "busy" file
+                    (undef, $self->{ini_file}) = tempfile(SUFFIX => ".ini", UNLINK => 0);
+                    $self->{ini_file} = fullwin32path($self->{ini_file}) if $^O eq 'cygwin';
+                    push @{ $self->{files_to_unlink} }, $self->{ini_file};
+                }
+                else
+                {
+                    $self->{ini_file} = File::Spec->devnull;
+                }
+            }
+            push @start, "-f", $self->{ini_file};
 	}
-	push @start, "-f", $self->{ini_file};
+
 
 	my ($rc, $out, $err) = $self->_ccm(@start);
 	return $self->set_error($err || $out) unless $rc == 0;
@@ -216,6 +236,13 @@ sub _start
 
     # remember the process that created $self (so we can check in DESTROY)
     $self->{pid} = $$;
+
+    # FIXME how can I determine that current session is 
+    # in web mode if it's an "inherited" session?
+    $self->{web_mode} = 1 if $self->{server};
+
+    # web mode renames the %filename placeholder (cf. "ccm set text_editor")
+    $self->{"%filename"} = $self->{web_mode} ? "%file" : "%filename";
 
     if ($self->{UseCoprocess})
     {
@@ -736,7 +763,7 @@ sub history
 {
     my $self = shift;
 
-    my ($rc, $out, $err) = $self->_ccm(history => @_);
+    my ($rc, $out, $err) = $self->_ccm(qw/history/, @_);
     return $self->set_error($err || $out) unless $rc == 0;
 
     return [ split(/^\*+\n?/m, $out) ];
@@ -828,7 +855,7 @@ sub finduse
 {
     my $self = shift;
 
-    my ($rc, $out, $err) = $self->_ccm(finduse => @_);
+    my ($rc, $out, $err) = $self->_ccm(qw/finduse/, @_);
 
     # NOTE: `ccm finduse ...' without `-query' complains if some of 
     # the given objects do not exist (and exits with status 1 unless at least
@@ -976,7 +1003,7 @@ sub _relations
 	my @cols = split(/\Q$FS\E/, $_, -1);	# don't strip empty trailing fields
 
 	# first $ncol_from columns are the "from" part;
-	# avoid to parse "from" part more than once # if "from => ..." was specified
+	# avoid to parse "from" part more than once if "from => ..." was specified
 	my @cols_from = splice @cols, 0, $ncol_from;
 	$from = $self->_parse_query_result($want_from, \@cols_from, $want_row_object)
 	    unless $args->{from} && $from;
@@ -1018,7 +1045,8 @@ sub project_tree
 
     my %wanted = %$options;	# make a copy, because we're modifying it below
     my $mark_projects = delete $wanted{mark_projects};
-    my $pathsep = delete $wanted{pathsep};
+    $wanted{pathsep} ||= VCS::CMSynergy::Client::_pathsep;
+    my $omit_rx = (delete $wanted{omit_top_dir}) && qr/^.*?\Q$wanted{pathsep}\E/;
     # NOTE: all other options are passed thru to traverse() 
     # (and get checked there)
 
@@ -1033,7 +1061,8 @@ sub project_tree
 	# value when invoked for a project and its top level
 	# directory; the "||=" below makes sure we dont't overwrite
 	# the project entry when "mark_projects" is in effect
-	my $path = VCS::CMSynergy::Traversal::path($pathsep);
+	my $path = VCS::CMSynergy::Traversal::path();
+	$path =~ s/$omit_rx// or next if $omit_rx;
 	@projects == 1 ? $tree{$path} : $tree{$path}->[$tag] ||= $_;
     };
 
@@ -1046,6 +1075,70 @@ sub project_tree
     }
 
     return \%tree;
+}
+
+
+sub project_diff
+{
+    my $self = shift;
+    _usage(@_, 4, 4, '\\%options, $old_project, $new_project, $differ');
+
+    my ($arg_options, $old_project, $new_project, $differ) = @_;
+    $arg_options = {} unless defined $arg_options;
+    croak(__PACKAGE__.qq[::project_diff: argument 1 ("options") must be a HASH ref: $arg_options])
+	unless ref $arg_options eq "HASH";
+
+    my %options = %$arg_options;	# make a copy, so we can't inadvertently modify it
+    my $hide_sub_trees = delete $options{hide_sub_trees};
+
+    # FIXME lift this hardcoded restriction:
+    # we must also adjust the regex below (to extract dirname from $path)
+    $options{pathsep} = "/"; 	
+
+    my $tree = $self->project_tree(\%options, $old_project, $new_project);
+
+    $differ->start($old_project, $new_project) if $differ->can("start");
+
+    # NOTE: the hiding of subtrees depends on an ordering of keys %tree
+    # that sorts "foo/bar/quux" _after_ "foo/bar"
+    my %hidden;			# directory paths of deleted/added dirs
+    foreach my $path (sort keys %$tree)
+    {
+	my ($old, $new) = @{ $tree->{$path} };
+
+	if (!defined $new)
+	{ 
+	    # only report the root of a deleted sub tree?
+	    if ($hide_sub_trees)
+	    {
+		$hidden{$path}++ if $old->is_dir;
+		(my $dirname = $path) =~ s:/[^/]*$::;
+		next if $hidden{$dirname};
+	    }
+	    $differ->deleted($path, $old); 
+	}
+	elsif (!defined $old)
+	{ 
+	    # only report the root of an added sub tree?
+	    if ($hide_sub_trees)
+	    {
+		$hidden{$path}++ if $new->is_dir;
+		(my $dirname = $path) =~ s:/[^/]*$::;
+		next if $hidden{$dirname};
+	    }
+	    $differ->added($path, $new);
+	}
+	elsif ($old ne $new)	
+	{ 
+	    $differ->changed($path, $old, $new); 
+	}
+	else			
+	{
+	    $differ->identical($path, $old) if $differ->can("identical");
+	}
+    }
+
+    return $differ->can("finish") ? $differ->finish : undef;
 }
 
 
@@ -1107,6 +1200,7 @@ sub _ccm_attribute
     croak(__PACKAGE__.qq[::_ccm_attribute: mssing argument "-value"])
 	unless defined $value;
 
+    my @cmd = ("attribute", @args);
     if ($value eq "")
     {
 	# Setting a text attribute to an empty string is a real PITA:
@@ -1123,10 +1217,9 @@ sub _ccm_attribute
 
 	return $self->_ccm_with_option(
 	    text_editor => $^O eq 'MSWin32' ?
-		qq[cmd /c echo off > %filename ] :  	#/
-		qq[$Config{cp} /dev/null %filename],
-	    attribute => @args, 
-	    { in =>  \"y\n" });
+		qq[cmd /c echo off > $self->{"%filename"}] :  	#/
+		qq[$Config{cp} /dev/null $self->{"%filename"}],
+	    @cmd, { in =>  \"y\n" });
     }
 
     if (($self->{coprocess} && (length($value) > 1600 || $value =~ /["\r\n]/))
@@ -1135,10 +1228,10 @@ sub _ccm_attribute
 	# Use ye olde text_editor trick if $value may cause problems
 	# (depending on execution mode and platform) because its
 	# too long or contains unquotable characters or...
-	return $self->ccm_with_text_editor($value, attribute => @args);
+	return $self->ccm_with_text_editor($value, @cmd);
     }
 
-    return $self->_ccm(attribute => @args, -value => $value);
+    return $self->_ccm(@cmd, -value => $value);
 }
 
 
@@ -1192,7 +1285,8 @@ sub list_attributes
     my ($rc, $out, $err) = $self->_ccm(qw/attribute -la/, $file_spec);
     return $self->set_error($err || $out) unless $rc == 0;
 
-    my %attrs = $out =~ /^(\S+) \s* \( (.*?) \)/gmx;
+    # NOTE: regex works for both classic mode and web mode
+    my %attrs = $out =~ /^(\S+) \s+ \(? (\S+?) [\s)]/gmx;
     return \%attrs;
 }
 
@@ -1242,10 +1336,6 @@ sub cat_object
     croak(__PACKAGE__.qq[::cat_object: argument 1 (object) must be a VCS::CMSynergy::Object: $object])
 	unless UNIVERSAL::isa($object, "VCS::CMSynergy::Object");
 
-    # [DEPRECATE < 6.3]
-    return $self->_cat_binary(@_)
-	if $self->version < 6.3 && $self->_attype_is_binary($object->cvtype);
-
     my $out;
     $destination = \$out if $want_return;
 
@@ -1254,80 +1344,6 @@ sub cat_object
 
     return $self->set_error($err || "`ccm cat $object' failed") unless $rc == 0;
     return $want_return ? $out : 1;
-}
-
-# [DEPRECATE < 6.3]
-sub _cat_binary
-{
-    my ($self, $object, $destination) = @_;
-
-    my $want_return = @_ == 2;
-    my ($rc, $out, $err);
-    $destination = \$out if $want_return;
-
-    my $file;
-    if (ref $destination)	# scalar ref, code ref, ....
-    {
-	(undef, $file) = tempfile();
-    }
-    else			# $destination is a filename
-    {
-	# avoid a double copy by writing directly to $destination
-	# NOTE: CCM executes foo_cli_view_cmd chdir'ed somewhere,
-	# convert $destination to an absolute pathname
-	$file = File::Spec->rel2abs($destination);
-    }
-
-    # NOTE: cli_view_cmd must be specific to $object's cvtype,
-    # otherwise it won't override the view_cmd attached to the attype.
-    my $view_cmd = $object->cvtype . "_cli_view_cmd";
-
-    ($rc, $out, $err) = $self->_ccm_with_option(
-	$view_cmd => $^O eq 'MSWin32' ?
-	    qq[cmd /c copy /b /y %filename "$file"] :  	#/
-	    qq[$Config{cp} %filename '$file'],
-	view => $object);
-    unless ($rc == 0)
-    {
-	unlink $file if ref $destination;
-	return $self->set_error($err || $out);
-    }
-    return 1 unless ref $destination;
-
-    require IPC::Run3;
-    my $type = IPC::Run3::_type($destination);
-    if ($type eq "FH")
-    {
-	require File::Copy;
-	File::Copy::copy($file, $destination);
-    }
-    else
-    {
-	open my $fh, "<$file"
-	    or return $self->set_error("can't open temp file `$file': $!");
-	binmode $fh;
-	IPC::Run3::_read_child_output_fh("temp file", $type, $destination, $fh, {});
-	close $fh;
-    }
-    unlink $file;
-    return $want_return ? $out : 1;
-}
-
-# internal method
-sub _attype_is_binary
-{
-    my ($self, $name) = @_;
-
-    my $is_binary = $self->{attype_is_binary}->{$name};
-    unless (defined $is_binary)
-    {
-	my ($result) = @{ $self->query_arrayref(
-	    { cvtype => "attype", name => $name }, qw(binary)) };
-	return $self->set_error("attype `$name' doesn't exist") unless $result;
-	$self->{attype_is_binary}->{$name} = $is_binary = 
-	    defined $result->[0] && $result->[0] eq "TRUE" ? 1 : 0;
-    }
-    return $is_binary;
 }
 
 
@@ -1353,7 +1369,7 @@ sub ls
 {
     my $self = shift;
 
-    my ($rc, $out, $err) = $self->_ccm(ls => @_);
+    my ($rc, $out, $err) = $self->_ccm(qw/ls/, @_);
     return $self->set_error($err || $out) unless $rc == 0;
 
     # filter out messages that a file has been implicitly synced 
@@ -1563,52 +1579,11 @@ sub ccm_with_text_editor
     #     a cygwin program ("/usr/bin/cp") on cygwin.
     my ($rc, $out, $err) = $self->_ccm_with_option(
 	text_editor => $^O eq 'MSWin32' ?
-	    qq[cmd /c copy /b /y "$tempfile" %filename] :		#/
-	    qq[$Config{cp} '$tempfile' %filename],
+	    qq[cmd /c copy /b /y "$tempfile" $self->{"%filename"}] :		#/
+	    qq[$Config{cp} '$tempfile' $self->{"%filename"}],
 	@args);
     return $self->set_error($err || $out) unless $rc == 0;
     return wantarray ? ($rc, $out, $err) : 1;
-}
-
-
-# [DEPRECATE < 6.3]
-sub get_releases
-{
-    my ($self) = @_;
-
-    my ($rc, $out, $err) = $self->_ccm(qw/releases -show/);
-    return $self->set_error($err || $out) unless $rc == 0;
-
-    my %releases;
-    foreach (split(/\n/, $out))
-    {
-	next if /^\s*$/;
-	my ($release, @names) = split(/\s*[:,]\s*/);
-	$releases{$release} = [ @names ];
-    }
-    return \%releases;
-}
-
-
-# [DEPRECATE < 6.3]
-sub set_releases
-{
-    my $self = shift;
-    _usage(@_, 1, 1, '\\%releases');
-
-    my $releases = shift;
-    my $text = "";
-    {
-	local $" = ", ";
-	while (my ($release, $names) = each %$releases) 
-	{
-	    $text .= "$release: @$names\n";
-	}
-    }
-
-    my ($rc, $out, $err) =
-	$self->ccm_with_text_editor($text, qw/releases -edit/);
-    return $rc == 0 || $self->set_error($err || $out);
 }
 
 

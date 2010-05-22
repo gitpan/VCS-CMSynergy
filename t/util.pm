@@ -1,3 +1,6 @@
+# Copyright (c) 2001-2010 argumentum GmbH, 
+# See COPYRIGHT section in VCS/CMSynergy.pod for usage and distribution rights.
+
 use Data::Dumper;
 use Test::Deep 0.093;
 use File::Spec;
@@ -23,6 +26,9 @@ BEGIN
 	# CCM_TEST_USER=user/password@host (Oracle style :)
 	@test_session{qw(user password host)} = 
 	    $ENV{CCM_TEST_USER} =~ m{^(.*?)/(.*?)\@(.*)};
+
+	$test_session{server} = delete $test_session{host}
+	    if $test_session{host} =~ /^https?:/i;
     }
     else
     {

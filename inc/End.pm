@@ -1,26 +1,18 @@
 #line 1
 package End;
 
-#
-# $Id: End.pm,v 1.2 2000/05/31 20:25:33 abigail Exp $
-#
-# $Log: End.pm,v $
-# Revision 1.2  2000/05/31 20:25:33  abigail
-# Added the license paragraph in the POD section.
-#
-# Revision 1.1  2000/05/31 19:35:01  abigail
-# Initial revision
-#
+use 5.006;
 
 use strict;
+use warnings;
+no  warnings 'syntax';
 
 use Exporter;
-use vars qw /@EXPORT @ISA $VERSION/;
 
-@ISA    = qw /Exporter/;
-@EXPORT = qw /end/;
+our @ISA     = qw /Exporter/;
+our @EXPORT  = qw /end/;
 
-($VERSION) = '$Revision: 1.2 $' =~ /([\d.]+)/;
+our $VERSION = '2009040201';
 
 sub end (&) {
     my    $code =  shift;
@@ -35,4 +27,4 @@ DESTROY {$_ [0] -> ()}
 
 __END__
 
-#line 120
+#line 107

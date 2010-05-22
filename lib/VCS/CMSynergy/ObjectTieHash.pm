@@ -1,6 +1,9 @@
 package VCS::CMSynergy::ObjectTieHash;
 
-our $VERSION = do { (my $v = q$Revision: 325 $) =~ s/^.*:\s*//; $v };
+# Copyright (c) 2001-2010 argumentum GmbH, 
+# See COPYRIGHT section in VCS/CMSynergy.pod for usage and distribution rights.
+
+our $VERSION = do { (my $v = q$Revision: 381 $) =~ s/^.*:\s*//; $v };
 
 use base 'VCS::CMSynergy::Object';
 

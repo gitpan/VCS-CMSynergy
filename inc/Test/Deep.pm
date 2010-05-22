@@ -7,6 +7,8 @@ use Carp qw( confess );
 
 use Test::Deep::Cache;
 use Test::Deep::Stack;
+use Test::Deep::RegexpVersion;
+
 require overload;
 use Scalar::Util;
 
@@ -26,18 +28,19 @@ use vars qw(
 	$Snobby $Expects $DNE $DNE_ADDR $Shallow
 );
 
-$VERSION = '0.103';
+$VERSION = '0.106';
+$VERSION = eval $VERSION;
 
 require Exporter;
 @ISA = qw( Exporter );
 
 @EXPORT = qw( eq_deeply cmp_deeply cmp_set cmp_bag cmp_methods
-	useclass noclass set bag subbagof superbagof subsetof supersetof
-	superhashof subhashof
+        useclass noclass set bag subbagof superbagof subsetof
+        supersetof superhashof subhashof
 );
 	# plus all the ones generated from %constructors below
 
-@EXPORT_OK = qw( descend render_stack deep_diag class_base );
+@EXPORT_OK = qw( descend render_stack class_base cmp_details deep_diag );
 
 $Snobby = 1; # should we compare classes?
 $Expects = 0; # are we comparing got vs expect or expect vs expect
@@ -353,7 +356,7 @@ sub wrap
 		{
 			$cmp = scalref($data);
 		}
-		elsif($] <= 5.010 ? ($base eq 'Regexp') : ($base eq 'REGEXP'))
+		elsif(($base eq 'Regexp') or ($base eq 'REGEXP'))
 		{
 			$cmp = regexpref($data);
 		}
@@ -378,7 +381,7 @@ sub class_base
 		my $reftype = Scalar::Util::reftype($val);
 
 
-		if ($] <= 5.010) {
+		if ($Test::Deep::RegexpVersion::OldStyle) {
 			if ($blessed eq "Regexp" and $reftype eq "SCALAR")
 			{
 				$reftype = "Regexp"
@@ -478,7 +481,10 @@ sub subbagof
 sub cmp_bag
 {
 	local $Test::Builder::Level = $Test::Builder::Level + 1;
-	return cmp_deeply(shift, bag(@{shift()}), shift);
+  my $ref = ref($_[1]) || "";
+  confess "Argument 2 to cmp_bag is not an ARRAY ref (".render_val($_[1]).")"
+    unless $ref eq "ARRAY";
+  return cmp_deeply(shift, bag(@{shift()}), shift);
 }
 
 sub superhashof
