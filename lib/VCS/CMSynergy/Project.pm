@@ -1,9 +1,10 @@
 package VCS::CMSynergy::Project;
 
-# Copyright (c) 2001-2010 argumentum GmbH, 
+# Copyright (c) 2001-2014 argumentum GmbH
 # See COPYRIGHT section in VCS/CMSynergy.pod for usage and distribution rights.
 
-our $VERSION = do { (my $v = q$Revision: 381 $) =~ s/^.*:\s*//; $v };
+use strict;
+use warnings;
 
 =head1 NAME
 
@@ -17,7 +18,7 @@ with additional methods for Synergy projects.
   use VCS::CMSynergy;
   $ccm = VCS::CMSynergy->new(%attr);
   ...
-  $proj = $ccm->object("editor-1_project:1");
+  $proj = $ccm->object("editor-1:project:1");
   print ref $proj;			# "VCS::CMSynergy::Project"
 
   $proj->chdir_into_wa;
@@ -29,14 +30,17 @@ This synopsis only lists the major methods.
 
 =cut 
 
-use strict;
-
 use base qw(VCS::CMSynergy::Object);
 
 use Carp;
-use VCS::CMSynergy::Client qw(_usage);
+use Type::Params qw( validate );
+use Types::Standard qw( Str Optional InstanceOf Maybe
+                        ArrayRef CodeRef HashRef );
 use File::Spec;
 use Cwd;
+
+use VCS::CMSynergy::Client qw(_KEYWORDS);
+
 
 =head1 WORKAREA METHODS
 
@@ -185,15 +189,15 @@ The default is your platform's path separator.
 
 =item C<attributes> (array ref)
 
-This option is only useful if L</:cached_attributes> is in effect. 
+This option is only useful if
+L<:cached_attributes|VCS::CMSynergy/":cached_attributes"> is in effect.
 It should contain a reference to an
-array of attribute names. If present, C<traverse>
-uses C<query_object_with_attributes> rather than
-C<query_object> for the traversal. Hence all objects encountered
+array of attribute names. If present, C<traverse> passes it down to
+C<query_object> during traversal. Hence all objects encountered
 in the traversal (e.g. C<$_> when bound in C<wanted> or the elements
 of the directory stack C<@VCS::CMSynergy::Traversal::dirs>) have
 their attribute caches primed for the given attributes,
-cf. L<query_object_with_attributes|/"query_object, query_object_with_attributes">.
+cf. L<query_object|VCS::CMSynergy/"query_object">.
 
 =back
 
@@ -297,9 +301,8 @@ my %traverse_opts =
 sub traverse
 {
     my $self = shift;
-    _usage(@_, 1, 2, '{ \\&wanted | \\%wanted } [, $dir_object]');
-
-    my ($arg_wanted, $dir) = @_;
+    my ($arg_wanted, $dir) = 
+        validate(\@_, CodeRef | HashRef, Optional[InstanceOf["VCS::CMSynergy::Object"]]);
 
     my %wanted;
     if (ref $arg_wanted eq 'CODE')
@@ -321,32 +324,19 @@ sub traverse
 	croak(__PACKAGE__."::traverse: argument 1 (wanted hash ref): option `wanted' is mandatory")
 	    unless $wanted{wanted};
     }
-    else
-    {
-	croak(__PACKAGE__."::traverse: argument 1 (wanted) must be a CODE or HASH ref: $arg_wanted");
-    }
 
     if (defined $dir)
     {
-	croak(__PACKAGE__."::traverse: argument 2 (dir) must be a VCS::CMSynergy::Object: $dir")
-	    unless UNIVERSAL::isa($dir, "VCS::CMSynergy::Object");
 	croak(__PACKAGE__."::traverse: argument 2 (dir) must have cvtype `dir': $dir")
 	    unless $dir->is_dir;
 
-	# check that $dir is member of $self
-	# FIXME there must be a better way to do this
-	my $result = $self->ccm->query_object(
-	    {
-		name		=> $dir->name,
-		cvtype		=> $dir->cvtype,
-		instance	=> $dir->instance,
-		version		=> $dir->version,
-		is_member_of	=> [ $self ]
-	    },
-	    @{ $wanted{attributes} });
-	return $self->ccm->set_error("directory `$dir' doesn't exist or isn't a member of `$self'")
-	    unless @$result;
-	$dir = $result->[0];
+	# check that $dir is indeed a member of $self
+        my $parents = $self->has_child($dir);
+	return $self->ccm->set_error("directory `$dir' isn't a member of `$self'")
+            unless @$parents;
+
+        # fetch its $wanted{attributes}
+        $dir->property($wanted{attributes}) if $wanted{attributes};
     }
     else
     {
@@ -588,40 +578,49 @@ to L<VCS::CMSynergy/query_object> as additional keywords.
 sub recursive_is_member_of
 {
     my $self = shift;
-    _usage(@_, 0, undef, '[{ $order_spec | undef }, @keywords]');
+    my ($order_spec, $keywords) = @_ ? validate(\@_, Maybe[Str], _KEYWORDS) : ();
+    $order_spec ||= "none";
 
-    my $order_spec = shift || "none";
-    return $self->ccm->query_object("recursive_is_member_of('$self',$order_spec)", @_);
+    return $self->ccm->query_object("recursive_is_member_of('$self',$order_spec)", @$keywords);
 }
 
 
 sub hierarchy_project_members
 {
     my $self = shift;
-    _usage(@_, 0, undef, '[{ $order_spec | undef }, @keywords]');
+    my ($order_spec, $keywords) = @_ ? validate(\@_, Maybe[Str], _KEYWORDS) : ();
+    $order_spec ||= "none";
 
-    my $order_spec = shift || "none";
-    return $self->ccm->query_object("hierarchy_project_members('$self',$order_spec)", @_);
+    return $self->ccm->query_object("hierarchy_project_members('$self',$order_spec)", @$keywords);
 }
 
 
-=head2 is_child_of
+=head2 is_child_of, has_child
 
 These are convenience methods to enumerate all members of a directory
-in the context of the invocant project.
+(C<is_child_of>) or all directories that contain the object (C<has_child>),
+both in the context of the invocant project 
 
   $members = $proj->is_child_of($dir, @keywords);
 
-is exactly the same as
+  $parents = $proj->has_child($obj, @keywords);
+
+are exactly the same as
 
   $members = $proj->ccm->query_object(
     "is_child_of('$dir','$proj')", @keywords);
 
-C<$dir> and C<@keywords> are optional. If C<$dir> is supplied
+  $parents = $proj->ccm->query_object(
+    "has_child('$obj','$proj')", @keywords);
+
+For C<has_child>, C<$obj> may be any C<VCS::CMSynergy::Object>.
+
+For C<is_child_of>, C<$dir> is optional; if supplied
 it must be a C<VCS::CMSynergy::Object> of type C<"dir">.
 If C<$dir> is C<undef> or not supplied, C<is_child_of> returns
 the toplevel directory of the invocant project (NOTE: the return value
 is actually a reference to an array with one element).
+
 If you supply C<@keywords> these are passed down
 to L<VCS::CMSynergy/query_object> as additional keywords.
 
@@ -630,13 +629,10 @@ to L<VCS::CMSynergy/query_object> as additional keywords.
 sub is_child_of
 {
     my $self = shift;
-    _usage(@_, 0, undef, '[{ $dir_object | undef }, @keywords]');
-
-    my $dir = shift;
+    my ($dir, $keywords) = 
+        validate(\@_, Maybe[InstanceOf["VCS::CMSynergy::Object"]], _KEYWORDS);
     if (defined $dir)
     {
-	croak(__PACKAGE__."::is_child_of: argument 1 ($dir) must be a VCS::CMSynergy::Object")
-	    unless UNIVERSAL::isa($dir, "VCS::CMSynergy::Object");
 	croak(__PACKAGE__."::is_child_of: argument 1 ($dir) must have cvtype `dir'")
 	    unless $dir->is_dir;
     }
@@ -644,7 +640,17 @@ sub is_child_of
     {
 	$dir = $self;
     }
-    return $self->ccm->query_object("is_child_of('$dir','$self')", @_);
+
+    return $self->ccm->query_object("is_child_of('$dir','$self')", @$keywords);
+}
+
+sub has_child
+{
+    my $self = shift;
+    my ($obj, $keywords) = 
+        validate(\@_, InstanceOf["VCS::CMSynergy::Object"], _KEYWORDS);
+
+    return $self->ccm->query_object("has_child('$obj','$self')", @$keywords);
 }
 
 
@@ -663,13 +669,50 @@ is exactly the same as
 sub object_from_proj_ref
 {
     my $self = shift;
-    _usage(@_, 1, undef, '{ $path | \\@path_components }, @keywords');
+    my ($path, $keywords) = validate(\@_, Str | ArrayRef[Str], _KEYWORDS);
 
-    my $path = shift;
-    return $self->ccm->object_from_proj_ref($path, $self, @_);
+    return $self->ccm->object_from_proj_ref($path, $self, @$keywords);
 }
 
 
+=head2 project_tree
+
+  $hash = $proj->project_tree(\%options);
+
+is exactly the same as
+
+  $hash = $proj->ccm->project_tree(\%options, $proj);
+
+See L<VCS::CMSynergy/project_tree>.
+
+=cut
+
+sub project_tree
+{
+    my ($self, $options) = @_;
+    return $self->ccm->project_tree($options, $self);
+}
+
+=head2 top_dir
+
+  $dir = $proj->top_dir(@keywords);
+
+Returns the C<VCS::CMSynergy::Object> representing the top level directory
+of project C<$proj>.
+
+If you supply C<@keywords> these are passed down
+to L<VCS::CMSynergy/query_object> as additional keywords.
+
+=cut
+
+sub top_dir
+{
+    my ($self, @keywords) = @_;
+    return $self->ccm->query_object(
+        { is_child_of => [ $self, $self ] }, @keywords)->[0];
+}
+
+ 
 =head1 MISCELLANEOUS
 
 =head2 show_reconfigure_properties
@@ -686,27 +729,27 @@ C<$what> must be one of the following strings:
 
 =item C<"tasks">
 
-shows tasks that are directly in the project’s reconfigure properties
+shows tasks that are directly in the project's reconfigure properties
 
 =item C<"folders">
 
-shows folders that are in the project’s reconfigure properties
+shows folders that are in the project's reconfigure properties
 
 =item C<"tasks_and_folders">
 
-shows tasks and folders that are directly in the project’s 
+shows tasks and folders that are directly in the project's 
 reconfigure properties
 
 =item C<"all_tasks">
 
-shows all tasks that are directly or indirectly in the project’s 
+shows all tasks that are directly or indirectly in the project's 
 reconfigure properties (indirectly means the task is in a folder 
-that is in the project’s reconfigure properties) 
+that is in the project's reconfigure properties) 
 
 =item C<"objects">
 
 shows objects in the task that are either directly or indirectly
-in the project’s reconfigure properties
+in the project's reconfigure properties
 
 =back
 
@@ -744,14 +787,13 @@ sub show_reconfigure_properties
 {
     my $self = shift;
     my $opts = @_ && ref $_[-1] eq "HASH" ? pop : {};
-    _usage(@_, 1, undef, '$what [, @keywords] [, \%options]');
+    my ($what, $keywords) = validate(\@_, Str, _KEYWORDS);
 
-    my $what = shift;
     croak(__PACKAGE__."::show_reconfigure_properties:".
 	  " argument 1 (what) must be one of tasks|folders|tasks_and_folders|all_tasks|objects")
 	unless $what =~ /^(tasks|folders|tasks_and_folders|all_tasks|objects)$/;
 
-    my $want = VCS::CMSynergy::_want(1, \@_);
+    my $want = VCS::CMSynergy::_want(1, $keywords);
     my $format = $VCS::CMSynergy::RS . join($VCS::CMSynergy::FS, values %$want) . $VCS::CMSynergy::FS;
 
     my @cmd = qw/reconfigure_properties -u -ns/;
@@ -760,7 +802,7 @@ sub show_reconfigure_properties
 
     my ($rc, $out, $err) = $self->ccm->_ccm(
 	@cmd, -format => $format, -show => $what, $self);
-    return $self->set_error($err || $out) unless $rc == 0;
+    return $self->ccm->set_error($err || $out) unless $rc == 0;
     # NOTE: if the reconf properties are empty, Synergy shows the string "None"
     return [ ] if $out eq "None";
 
@@ -769,7 +811,7 @@ sub show_reconfigure_properties
     {
 	next unless length($_);				# skip empty leading record
 	my @cols = split(/\Q${VCS::CMSynergy::FS}\E/, $_, -1);	# don't strip empty trailing fields
-	push @result, $self->ccm->_parse_query_result($want, \@cols, 1);
+	push @result, $self->ccm->_query_result($want, \@cols, 1);
     }
     return \@result;
 }

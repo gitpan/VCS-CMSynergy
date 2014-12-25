@@ -1,38 +1,35 @@
 package VCS::CMSynergy;
 
-# Copyright (c) 2001-2010 argumentum GmbH, 
+# Copyright (c) 2001-2013 argumentum GmbH
 # See COPYRIGHT section in VCS/CMSynergy.pod for usage and distribution rights.
 
-# $Revision: 383 $
-
-our $VERSION = '1.35';
+our $VERSION = '1.40';
 
 use 5.006_000;				# i.e. v5.6.0
 use strict;
+use warnings;
 
 use VCS::CMSynergy::Client qw(
-    is_win32 $Debug $Error $Ccm_command
-    _exitstatus _error _usage);
-our @ISA = qw(VCS::CMSynergy::Client);
+    is_win32 _fullwin32path $Error $Ccm_command _error
+    _FILE_SPEC _KEYWORDS _FILE_SPEC_KEYWORDS );
 
+our @ISA = qw(VCS::CMSynergy::Client);
+our @EXPORT_OK = qw( ANY_OF NONE_OF );
 
 use Carp;
 use Config;
 use File::Spec;
 use File::Temp qw(tempfile);		# in Perl core v5.6.1 and later
+use Log::Log4perl qw(:easy);
 
-use constant ROW_ARRAY	=> 0;
+use Type::Params qw( compile validate );
+use Types::Standard qw( slurpy Optional Str InstanceOf HasMethods
+    ArrayRef CodeRef GlobRef HashRef ScalarRef FileHandle Dict );
+use constant _PROJECT_SPEC   => Str | InstanceOf["VCS::CMSynergy::Project"];
+use constant _QUERY_KEYWORDS => compile(Str | ArrayRef | HashRef, _KEYWORDS);
+
 use constant ROW_HASH	=> 1;
 use constant ROW_OBJECT	=> 2;
-
-BEGIN
-{
-    if ($^O eq 'cygwin')
-    { 
-	eval "use Filesys::CygwinPaths qw(:all); 1" or die $@;
-    }
-}
-
 
 sub import
 {
@@ -44,12 +41,17 @@ sub import
 	cached_attributes	=> 0,
     );
 
+    my @list;
     foreach (@_)
     {
-	my $opt;
-	die qq[Invalid option "$_" in "use ].__PACKAGE__.qq["]
-	    unless ($opt) = /^[!:](.*)$/i and exists $use{$opt};
-	$use{$opt} = /^:/ ? 1 : 0;
+	if (/^([!:])(.*)$/ and exists $use{$2})
+	{
+	    $use{$2} = $1 eq ":" ? 1 : 0;
+        }
+        else
+        {
+            push @list, $_;
+        }
     }
 
     while (my ($opt, $value) = each %use)
@@ -62,6 +64,9 @@ sub import
     # e.g. eliminate branches guarded with "if (V::C::use_cached_attributes)"
     require VCS::CMSynergy::Object;
     require VCS::CMSynergy::ObjectTieHash if use_tied_objects();
+
+   # let Exporter handle the rest
+   $class->export_to_level(1, undef, @list);
 }
 
 
@@ -111,21 +116,29 @@ sub _start
     $self->{env} = { %{ $client->{env} } } if $client->{env};
     bless $self, $class;
 
+    # prime web_mode and ccm_addr as early as possible
+    $self->{web_mode} = 1 if $self->version >= 7.2 || $args{server};
+    $self->{env}->{CCM_ADDR} = delete $args{CCM_ADDR} if defined $args{CCM_ADDR};
+
+    # ini_file and UseCoprocess are only valid for classic mode
+    foreach (qw( ini_file UseCoprocess ))
+    {
+        return $self->set_error(qq["$_" is not valid for web mode])
+            if $self->web_mode && $args{$_};
+    }
+
     # Cygwin: some start options denote path names that are 
     # passed down to Synergy; convert them to native Windows form
     if ($^O eq 'cygwin')
     {
 	foreach (qw/home ini_file ui_database_dir/)
 	{
-	    $args{$_} = fullwin32path($args{$_}) if defined $args{$_};
+	    $args{$_} = _fullwin32path($args{$_}) if defined $args{$_};
 	}
     }
 
     my @start = qw/start -m -q -nogui/;
 
-    # FIXME 7.1 web mode:
-    # - in effect when "-s" i.e. $args{server} is specified
-    # - "-f" not allowed
     while (my ($arg, $value) = each %args)
     {
 	croak(__PACKAGE__.qq[::_start: unrecognized argument "$arg"]) 
@@ -135,35 +148,23 @@ sub _start
 	push @start, $start_opts{$arg} => $value if defined $start_opts{$arg};
     }
 
-    $self->{env}->{CCM_ADDR} = delete $self->{CCM_ADDR} if defined $self->{CCM_ADDR};
     push @start, '-rc' if $self->{remote_client};
 
     if (defined $self->ccm_addr)
     {
 	$self->{KeepSession} = 1 unless defined $self->{KeepSession};
-	if ($Debug)
+        INFO sprintf(qq[will %s session "%s"],
+                     $self->{KeepSession} ? "keep" : "not keep",
+                     $self->ccm_addr);
+
+	if (is_win32 && !$self->web_mode)
 	{
-	    my $ccm_addr = $self->ccm_addr;
-	    $self->trace_msg($self->{KeepSession} ? 
-		qq[will keep session "$ccm_addr"\n] :
-		qq[will not keep session "$ccm_addr"\n]);
-	}
-
-	if (is_win32)
-	{
-	    # figure out user of session specified by CCM_ADDR
-	    $self->{user} = 
-		$self->ps(rfc_address => $self->ccm_addr)->[0]->{user};
-
-	    # FIXME not necessary in web mode 
-	    # ccm ps: process (usr_cmd_interface)
-
 	    # create a minimal ini file (see below for an explanation)
 	    (my $inifh, $self->{ini_file}) = tempfile(SUFFIX => ".ini", UNLINK => 0);
-	    $self->{ini_file} = fullwin32path($self->{ini_file}) if $^O eq 'cygwin';
+	    $self->{ini_file} = _fullwin32path($self->{ini_file}) if $^O eq 'cygwin';
 	    			# because this name is passed down to ccm.exe
 		
-	    print $inifh "[UNIX information]\nUser = $self->{user}\n";
+	    printf $inifh "[UNIX information]\nUser = %s\n", $self->user;
 	    close($inifh);
 	    push @{ $self->{files_to_unlink} }, $self->{ini_file};
 	}
@@ -176,7 +177,7 @@ sub _start
 	return $self->set_error("don't know how to connect to CM Synergy: neither database nor CCM_ADDR specified")
 	    unless $args{database};
 
-	unless ($self->{server})        # NOTE: "-f" is illegal in web mode
+	unless ($self->web_mode)
 	{
             unless (defined $self->{ini_file})
             {
@@ -190,7 +191,7 @@ sub _start
                     #     the actual unlink may occur before the session is
                     #     stopped and Windows refuses removing the "busy" file
                     (undef, $self->{ini_file}) = tempfile(SUFFIX => ".ini", UNLINK => 0);
-                    $self->{ini_file} = fullwin32path($self->{ini_file}) if $^O eq 'cygwin';
+                    $self->{ini_file} = _fullwin32path($self->{ini_file}) if $^O eq 'cygwin';
                     push @{ $self->{files_to_unlink} }, $self->{ini_file};
                 }
                 else
@@ -206,7 +207,7 @@ sub _start
 	return $self->set_error($err || $out) unless $rc == 0;
 
 	$self->{env}->{CCM_ADDR} = $out;
-	$Debug && $self->trace_msg(qq[started session "$out"\n]);
+	INFO qq[started session "$out"];
     }
 
     # NOTE: Use of $CCM_INI_FILE fixes the annoying `Warning:
@@ -232,23 +233,21 @@ sub _start
     # or the user's personal ccm.ini its "User" setting will be used
     # and may trigger the "security violation".
 
-    $self->{env}->{CCM_INI_FILE} = $self->{ini_file} if is_win32;
+    $self->{env}->{CCM_INI_FILE} = $self->{ini_file}
+	if is_win32 && !$self->web_mode;
 
     # remember the process that created $self (so we can check in DESTROY)
     $self->{pid} = $$;
 
-    # FIXME how can I determine that current session is 
-    # in web mode if it's an "inherited" session?
-    $self->{web_mode} = 1 if $self->{server};
 
     # web mode renames the %filename placeholder (cf. "ccm set text_editor")
-    $self->{"%filename"} = $self->{web_mode} ? "%file" : "%filename";
+    $self->{"%filename"} = $self->web_mode ? "%file" : "%filename";
 
     if ($self->{UseCoprocess})
     {
 	if ($self->_spawn_coprocess)
 	{
-	    $Debug && $self->trace_msg("spawned coprocess (pid=".$self->{coprocess}->pid.")\n", 8);
+	    TRACE sprintf("spawned coprocess (pid=%d)", $self->{coprocess}->pid);
 	}
 	else
 	{
@@ -263,11 +262,12 @@ sub _start
 	return $self->set_error($err || $out) unless $rc == 0;
 	$self->{delimiter} = $out;
 
+	$self->{delimiter_rx} = qr/[$self->{delimiter}:]/;
 	$self->{objectname_rx} = 
-	    qr/^(.*?)(?:\Q$self->{delimiter}\E|:)(.*?):(.*?):(.*?)$/;
+	    qr/^(.*?)$self->{delimiter_rx}(.*?):(.*?):(.*?)$/;
 					# -> (name, version, cvtype, instance)
 	$self->{finduse_rx} = 
-	    qr/^\t(.*?)\Q$self->{delimiter}\E.*?\@(.*?)$/;
+	    qr/^(.*?)$self->{delimiter_rx}.*?\@(.*?)$/;
     					# -> (path, project)
     }
 
@@ -277,13 +277,6 @@ sub _start
     delete $self->{database};
 
     $self->{objects} = {} if use_cached_attributes();
-
-    if ($Debug >= 9)
-    {
-	require Data::Dumper;
-	local $Data::Dumper::Useqq = 1;
-	$self->trace_msg(Data::Dumper->Dump([$self], ["$self"]));
-    }
 
     return $self;
 }
@@ -327,7 +320,7 @@ sub DESTROY
     unless ($self->{KeepSession})
     {
 	$self->_ccm(qw/stop/);
-	$Debug && $self->trace_msg("stopped session ".$self->ccm_addr."\n");
+	INFO sprintf(qq[stopped session "%s"], $self->ccm_addr);
     }
 
     # on Windows, certain files (e.g. the fake ccm.ini) might still be busy
@@ -365,7 +358,8 @@ sub _my_ps
 
 # determine database path (in canonical format) etc from `ccm ps'
 __PACKAGE__->_memoize_method(database => sub { shift->_my_ps('database'); });
-__PACKAGE__->_memoize_method(user => sub { shift->_my_ps('user'); });
+__PACKAGE__->_memoize_method(user     => sub { shift->_my_ps('user'); });
+__PACKAGE__->_memoize_method(web_mode => sub { shift->_my_ps('process') eq "usr_cmd_interface"; });
 
 
 sub query
@@ -374,11 +368,12 @@ sub query
 
     my ($rc, $out, $err) = $self->_ccm(qw/query -u/, @_);
 
-    # NOTE: if there are no hits, `ccm query' exits with status 1, 
-    # but produces no output on either stdout and stderr
+    # NOTE: If there are no hits, `ccm query' exits 
+    # with status 1 (classic mode) or 6 (web mode),
+    # but produces no output on either stdout and stderr.
 
     return [ split(/\n/, $out) ] if $rc == 0;
-    return [ ] if $rc == _exitstatus(1) and $out eq "" and $err eq "";
+    return [ ] if $rc != 0 and $out eq "" and $err eq "";
     return $self->set_error($err || $out);
 }
 
@@ -386,30 +381,27 @@ sub query
 sub query_arrayref
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$query, @keywords');
+    my ($query, $keywords) = _QUERY_KEYWORDS->(@_);
 
-    my $query = shift;
-    return $self->_query($query, \@_, ROW_ARRAY);
+    return _flatten_rows($self->_query($query, $keywords, ROW_HASH), $keywords);
 }
 
 
 sub query_hashref
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$query, @keywords');
+    my ($query, $keywords) = _QUERY_KEYWORDS->(@_);
 
-    my $query = shift;
-    return $self->_query($query, \@_, ROW_HASH);
+    return $self->_query($query, $keywords, ROW_HASH);
 }
 
 
 sub query_object
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$query, @attributes');
+    my ($query, $keywords) = _QUERY_KEYWORDS->(@_);
 
-    my $query = shift;
-    return $self->_query($query, \@_, ROW_OBJECT);
+    return $self->_query($query, $keywords, ROW_OBJECT);
 }
 
 *query_object_with_attributes = \&query_object;		# compatibility alias
@@ -417,15 +409,15 @@ sub query_object
 sub query_count
 {
     my $self = shift;
-    _usage(@_, 1, 1, '$query');
+    my ($query) = validate(\@_, Str | HashRef);
 
-    my $query = shift;
     my ($rc, $out, $err) = $self->_ccm(
 	qw/query -u -ns -nf -format X/, $self->_expand_query($query));
 
-    # NOTE: if there are no hits, `ccm query' exits with status 1, 
-    # but produces no output on either stdout and stderr
-    return 0 if $rc == _exitstatus(1) and $out eq "" and $err eq "";
+    # NOTE: If there are no hits, `ccm query' exits 
+    # with status 1 (classic mode) or 6 (web mode),
+    # but produces no output on either stdout and stderr.
+    return 0 if $rc != 0 and $out eq "" and $err eq "";
     return $out =~ tr/X/X/ if $rc == 0;			# count 'em X's
     return $self->set_error($err || $out);
 }
@@ -448,26 +440,32 @@ sub _query
 
     $query = $self->_expand_query($query);
 
-    my $want = _want($row_type == ROW_OBJECT, $keywords);
+    my $want = _want($row_type, $keywords);
 
     my $want_finduse = delete $want->{finduse};
-    croak(__PACKAGE__.qq[::_query: keyword "finduse" not allowed when ROW_OBJECT wanted])
-	if $want_finduse && $row_type == ROW_OBJECT;
+    if ($want_finduse)
+    {
+        croak(__PACKAGE__.qq[::_query: keyword "finduse" not allowed when ROW_OBJECT wanted])
+            if $row_type == ROW_OBJECT;
+        croak(__PACKAGE__.qq[::_query: keyword "finduse" does not work in web mode])
+            if $self->web_mode;
+    }
 
     my $format = $RS . join($FS, values %$want) . $FS;
 
     my ($rc, $out, $err) = $want_finduse ?
-	$self->_ccm_with_option(
-	    Object_format => $format, 
+        $self->_ccm_with_option(
+     	    Object_format => $format, 
 	    qw/finduse -query/ => $query) :
 	$self->_ccm( 
 	    qw/query -u -ns -nf -format/ => $format, $query);
 
-    # NOTE: if there are no hits, `ccm query' exits with status 1, 
-    # but produces no output on either stdout and stderr
-    return [ ] if $rc == _exitstatus(1) && $out eq "" && $err eq "";
+    # NOTE: If there are no hits, `ccm query' exits 
+    # with status 1 (classic mode) or 6 (web mode),
+    # but produces no output on either stdout and stderr.
+    return [ ] if $rc != 0 && $out eq "" && $err eq "";
 
-    # NOTE: if the query string contained a syntax error, Synergy
+    # NOTE: If the query string contained a syntax error, Synergy
     # prints "Syntax error in query request", but won't tell you the
     # query string, making it hard to diagnose the problem.
     # So append the query string to the error message.
@@ -507,7 +505,8 @@ sub _query
 	    {
 		foreach (split(/\n/, $fu_lines))
 		{
-		    next if /^\s*$/;
+                    s/^\s*//;
+		    next if /^$/;
 		    my ($path, $project) = /$self->{finduse_rx}/
 			or return $self->set_error(
 			    qq[unrecognizable line returned from "finduse -query": "$_"]);
@@ -516,14 +515,9 @@ sub _query
 	    }
 	}
 
-	my $row = $self->_parse_query_result($want, \@cols, $row_type == ROW_OBJECT);
+	my $row = $self->_query_result($want, \@cols, $row_type);
 	$row->{finduse} = \%finduse if $want_finduse;
 	push @result, $row;
-    }
-
-    if ($row_type == ROW_ARRAY)
-    {
-	$_ = [ @$_{@$keywords} ] foreach @result;
     }
     return \@result;
 }
@@ -534,11 +528,18 @@ sub _query
 # doesn't accept these where a "file_spec" is expected 
 # (at least on Unix, because they contain slashes). 
 # Hence rewrite these fullnames to objectnames.
+# Also normalize the name/version separator to a colon.
 sub _fullname2objectname
 {
     my ($self, $fullname) = @_;
-    $fullname =~ s{^(.*?)/(.*?)/(.*?)/(.*?)$}
-	          {$3$self->{delimiter}$4:$2:$1};
+    if ($fullname =~ m{/} && (my @p = split("/", $fullname)) == 4)
+    {
+        $fullname = join(":", $p[2], $p[3], $p[1], $p[0]);
+    }
+    else
+    {
+        $fullname =~ s/$self->{delimiter_rx}/:/;
+    }
     return $fullname;
 }
 
@@ -611,9 +612,9 @@ my %_rewrite_rule =
 #   automatically added to the returned hash
 sub _want
 {
-    my ($want_row_object, $keywords) = @_;
+    my ($row_type, $keywords) = @_;
     my %want = map { $_ => "%$_" } @$keywords;
-    $want{object} = "%objectname" if $want_row_object;
+    $want{object} = "%objectname" if $row_type == ROW_OBJECT;
 
     # handle special keywords
     foreach (keys %want)
@@ -621,7 +622,7 @@ sub _want
 	if (my $rule = $_rewrite_rule{$_})
 	{
 	    croak(__PACKAGE__.qq[::_want: keyword "$_" not allowed when ROW_OBJECT wanted]) 
-		if $want_row_object && !$rule->{row_object_ok};
+		if $row_type == ROW_OBJECT && !$rule->{row_object_ok};
 	    $want{$_} = $rule->{format};
 	}
     }
@@ -629,9 +630,9 @@ sub _want
     return \%want;
 }
 
-sub _parse_query_result
+sub _query_result
 {
-    my ($self, $want, $cols, $want_row_object) = @_;
+    my ($self, $want, $cols, $row_type) = @_;
 
     my %row;
     
@@ -650,7 +651,7 @@ sub _parse_query_result
 	}
     }
 
-    if ($want_row_object)
+    if ($row_type == ROW_OBJECT)
     {
 	my $obj = delete $row{object};
 	$obj->_update_acache(\%row);
@@ -663,9 +664,13 @@ sub _parse_query_result
 sub _expand_query
 {
     my ($self, $query) = @_;
-    if (ref $query eq 'HASH')
+    if (ref $query eq 'ARRAY')
     {
 	$query = $self->_query_shortcut($query);
+    }
+    elsif (ref $query eq 'HASH')
+    {
+	$query = $self->_query_deprecated_shortcut($query);
     }
     else
     {
@@ -684,13 +689,41 @@ my %ac_cvtype = map { $_ => "AC/cvtype/$_/1" }
 # helper: expand shortcut queries
 sub _query_shortcut
 {
-    my ($self, $hashref) = @_;
+    my ($self, $aref) = @_;
+    croak("shortcut query must consist of an even number of elements") unless @$aref % 2 == 0;
 
-    $Debug >= 5 && $self->trace_msg(
-	"shortcut query { ".join(", ", map { "$_ => $hashref->{$_}" } keys %$hashref)." }\n", 5);
+    DEBUG "shortcut query [ " .
+            join(", ", map { $_ % 2 ? () : qq[$aref->[$_] => "$aref->[$_+1]"] }
+                       0..(@$aref-1)) .
+          "]";
+
+    my %expr;
+    while (@$aref)
+    {
+        my ($key, $value) = splice(@$aref, 0, 2);
+        push @{ $expr{$key} },
+             ref $value eq "ARRAY"
+                 ? ANY_OF($key, @$value)
+                 : $key . ($value =~ /[*?]/ ? " match " : "=") . _quote_value($value);
+    }
+
+    my $expanded = join(" and ",
+                        map { my $alt = join(" or ", @$_);
+                              @$_ == 1 ? $alt : "($alt)"; } values %expr); 
+    DEBUG qq[expanded shortcut query "$expanded"];
+    return $expanded;
+}
+
+# helper: expand shortcut queries (deprecated)
+sub _query_deprecated_shortcut
+{
+    my ($self, $href) = @_;
+    carp(qq[shortcut queries with {...} are deprecated, see the section on "shortcut query notation" in VCS::CMSynergy's pod]);
+
+    DEBUG "deprecated shortcut query { ".join(", ", map { "$_ => $href->{$_}" } keys %$href)." }";
 
     my @clauses;
-    while (my ($key, $value) = each %$hashref)
+    while (my ($key, $value) = each %$href)
     {
 	my $ref = ref $value;
 	if ($ref eq '')
@@ -738,9 +771,23 @@ sub _query_shortcut
 	}
     }
 
-    my $result = join(" and ", @clauses);
-    $Debug >= 5 && $self->trace_msg("shortcut query => $result\n", 5);
-    return $result;
+    my $expanded = join(" and ", @clauses);
+    DEBUG qq[expanded shortcut query "$expanded"];
+
+    return $expanded;
+}
+
+sub ANY_OF
+{
+    my $key = shift;
+    croak(__PACKAGE__.qq[::ANY_OF needs at least one value]) unless @_;
+
+    return "(" . join(" or ", map { "$key="._quote_value($_) } @_). ")";
+}
+
+sub NONE_OF
+{
+    return "(not " . ANY_OF(@_) . ")";
 }
 
 # helper (not a method): smart quoting of string or boolean values
@@ -758,6 +805,19 @@ sub _quote_value
 	   qq['$_'];		   # use single quotes otherwise
 }
 
+# helper (not a method): $rows is an array of hashes;
+# replace each hash by the values of the keys in $keys (in this order);
+# if $rows is undefined, return undefined
+# NOTE: This modifies the original array.
+sub _flatten_rows
+{
+    my ($rows, $keys) = @_;
+    return unless defined $rows;
+
+    $_ = [ @$_{@$keys} ] foreach @$rows;
+    return $rows;
+}
+
 
 sub history
 {
@@ -773,32 +833,85 @@ sub history
 sub history_arrayref
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$file_spec, @keywords');
+    my ($file_spec, $keywords) = _FILE_SPEC_KEYWORDS->(@_);
 
-    my $file_spec = shift;
-    return $self->_history($file_spec, \@_, ROW_ARRAY);
+    return _flatten_rows($self->_history($file_spec, $keywords), $keywords);
 }
 
 
 sub history_hashref
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$file_spec, @keywords');
+    my ($file_spec, $keywords) = _FILE_SPEC_KEYWORDS->(@_);
 
-    my $file_spec = shift;
-    return $self->_history($file_spec, \@_, ROW_HASH);
+    return $self->_history($file_spec, $keywords);
 }
 
+
 # helper: history with correct handling of multi-line attributes
+# NOTE: similar to _query(..., ROW_HASH) 
 sub _history
 {
-    my ($self, $file_spec, $keywords, $row_type) = @_;
+    my ($self, $file_spec, $keywords) = @_;
 
-    my $want = _want($row_type == ROW_OBJECT, $keywords);
+    return self->_history_classic($file_spec, $keywords)
+        unless $self->web_mode;
+
+    my $want = _want(ROW_HASH, $keywords);
+
+    # the web mode "keywords" for predecessors and successors are
+    # "%[predecessors]objectname" and "%[successors]objectname";
+    # list values are comma separated, "<void>" denotes an empty list
+    # (will be translated to undef by _query_result)
+    foreach (qw( predecessors successors ))
+    {
+        $want->{$_} = "%[$_]objectname" if $want->{$_};
+    }
+
+    my $format = $RS . join($FS, values %$want) . $FS;
+
+    my ($rc, $out, $err) = $self->_ccm(qw/history -nf -format/, $format, $file_spec);
+    return $self->set_error($err || $out) unless $rc == 0;
+
+    my @result;
+    foreach (split(/\Q$RS\E/, $out))		# split into records 
+    {
+	next unless length($_);			# skip empty leading record
+
+	my @cols = split(/\Q$FS\E/, $_, -1);	# don't strip empty trailing fields
+	my $row = $self->_query_result($want, \@cols, ROW_HASH);
+
+        my %cessors;
+        foreach (qw( predecessors successors ))
+        {
+            next unless $want->{$_};
+            my $list = delete $row->{$_};       # temporarily strip slot
+            $cessors{$_} = defined $list ?
+                [ map { $self->object($_) } split(/,/, $list) ] : [];
+        }
+
+        if ($want->{object})
+        {
+            my $obj = delete $row->{object};    # temporarily strip "object" slot...
+            $obj->_update_acache($row);         # ... update $obj's cached attributes
+            $row->{object} = $obj;              # ... and put "object" slot back
+        }
+
+        # put predecessors, successors slots back
+        @$row{keys %cessors} = values %cessors;
+
+	push @result, $row;
+    }
+    return \@result;
+}
+
+sub _history_classic
+{
+    my ($self, $file_spec, $keywords) = @_;
+
+    my $want = _want(ROW_HASH, $keywords);
     my $want_predecessors = delete $want->{predecessors};
     my $want_successors = delete $want->{successors};
-    croak(__PACKAGE__.qq[::_history: keyword "predecessors" or "successors" not allowed when ROW_OBJECT wanted]) 
-	if ($want_predecessors || $want_successors) && $row_type == ROW_OBJECT;
 
     my $format = $RS . join($FS, values %$want) . $FS;
 
@@ -814,10 +927,19 @@ sub _history
 
 	my @cols = split(/\Q$FS\E/, $_, -1);	# don't strip empty trailing fields
 	
-	# history information is the last "column"
+	# NOTE: the last "column" contains the actual history information
+        # (predecessors and successors), the rest is formatted like
+        # a "ccm query" result
 	my $history = pop @cols;
 
-	my $row = $self->_parse_query_result($want, \@cols, 0);
+	my $row = $self->_query_result($want, \@cols, ROW_HASH);
+
+        if ($want->{object})
+        {
+            my $obj = delete $row->{object};    # temporarily strip "object" slot...
+            $obj->_update_acache($row);         # ... update $obj's cached attributes
+            $row->{object} = $obj;              # ... and put "object" slot back
+        }
 
 	if ($want_predecessors || $want_successors)
 	{
@@ -842,34 +964,170 @@ sub _history
 
 	push @result, $row;
     }
-
-    if ($row_type == ROW_ARRAY)
-    {
-	$_ = [ @$_{@$keywords} ] foreach @result;
-    }
     return \@result;
+}
+=for comment
+
+Consider the following history
+
+  ...  ->  foo,3  ->  foo,4  ->  foo,5  ->  bar,6  ->  bar,7  ->  ...
+
+The "history" command reports only a partial view of that.
+E.g. invoked as "ccm history foo,N:ascii:1" for some N it shows only the chain
+of versions of "foo" plus "bar,6". predecessor/successor lists are 
+artificially cut off at the "rename points",
+so neither "ccm history foo,1:ascii:1" nor "ccm history bar,6:ascii:1" has the
+complete predecessor/successor information. 
+
+In order to produce a complete history it is _not_ enough to simply
+"glue" together the graphs for foo,N and bar,N. We must form the
+"union" of predecessor/successor lists for the overlapping elements.
+
+  ccm history foo,5:ascii:1
+
+  foo,5:ascii:1
+  Predecessors:
+          foo,4:ascii:1
+  Successors:
+          bar,6:ascii:1
+  ***************************************************************
+  bar,6:ascii:1
+  Predecessors:
+          foo,5:ascii:1
+  Successors:
+  ***************************************************************
+
+  ccm history bar,6:ascii:1
+
+  foo,5:ascii:1
+  Predecessors:
+  Successors:
+          bar,6:ascii:1
+  ***************************************************************
+  bar,6:ascii:1
+  Predecessors:
+          foo,5:ascii:1
+  Successors:
+          bar,7:ascii:1
+  ***************************************************************
+
+=cut
+
+# FIXME pod
+sub full_history_arrayref
+{
+    my $self = shift;
+    my ($file_spec, $keywords) = _FILE_SPEC_KEYWORDS->(@_);
+
+    return _flatten_rows($self->_full_history($file_spec, $keywords), $keywords);
+}
+
+# FIXME pod
+sub full_history_hashref
+{
+    my $self = shift;
+    my ($file_spec, $keywords) = _FILE_SPEC_KEYWORDS->(@_);
+
+    return $self->_full_history($file_spec, $keywords);
+}
+
+sub _full_history
+{
+    my ($self, $file_spec, $keywords, $row_type) = @_;
+
+    croak(__PACKAGE__."::full_history_{arrayref,hashref} are not available in web mode")
+        if $self->web_mode;
+
+    # convert $file_spec into a VCS::CMSynergy::Object if it's not already one
+    $file_spec = $self->property(object => $file_spec) or return
+        unless ref $file_spec;
+
+    # augment $keywords with ones needed by the algorithm below
+    my @kw = (@$keywords, qw( object predecessors successors ));
+
+    # keep track of all objects encountered in a hash indexed by objectname;
+    # value is a hash with keys @kw and a count (_seen) how many times 
+    # we've encountered this particular object
+    my %history;
+
+    # keep track of "direct" lineage encountered so far
+    my %nit_seen;      
+
+    my @todo = ($file_spec);
+    while (@todo)
+    {
+        my $obj = pop @todo;
+        $nit_seen{$obj->_nit} = 1;
+
+        foreach my $row (@{ $self->_history($obj, \@kw) })
+        {
+            $obj = $row->{object};
+            push @todo, $obj unless $nit_seen{$obj->_nit};
+
+            if (my $h = $history{$obj})
+            {
+                # we've encountered $row->{object} before: append predecessor
+                # and successor lists of $row to $h ($row and $h should
+                # be identical in all other fields); don't worry about
+                # duplicates in these list, we'll deal with them later
+                push @{ $h->{$_} }, @{ $row->{$_} }
+                    foreach qw( predecessors successors );
+            }
+            else
+            {
+                $history{$obj} = $row;
+            }
+            $history{$obj}->{_seen}++;
+        }
+    }
+
+    my @rows = values %history;
+    foreach my $h (@rows)
+    {
+        if (delete $h->{_seen} > 1)
+        {
+            # make predecessor and successor lists unique
+            $h->{$_} = _uniq_objects($h->{$_})
+                foreach qw( predecessors successors );
+        }
+    }
+    return \@rows;
+}
+
+# not a method
+# returns a new list of objects with duplicates removed 
+# (takes and return an array ref)
+sub _uniq_objects
+{
+    my ($list) = @_;
+    my %uniq;
+    $uniq{$_} = $_ foreach @$list;       # ye olde trick: stringified ref => ref
+    return [ values %uniq ];
 }
 
 
 sub finduse
 {
     my $self = shift;
+    my ($file_specs) = validate(\@_, slurpy ArrayRef[_FILE_SPEC]);
 
-    my ($rc, $out, $err) = $self->_ccm(qw/finduse/, @_);
+    my ($rc, $out, $err) = $self->_ccm(qw/finduse/, @$file_specs);
 
     # NOTE: `ccm finduse ...' without `-query' complains if some of 
     # the given objects do not exist (and exits with status 1 unless at least
     # one exists). But for `ccm finduse -query ...', if there are no hits, 
-    # the command exits with status 1 and produces no output on either 
+    # the command exits with an error status and produces no output on either 
     # stdout and stderr. (This is the same behaviour as for `ccm query ...'.) 
     # We will not produce an error in any case. However, the returned array
     # will contain undef in postions corresponding to non-existing objects.
-    return [ ] if $rc == _exitstatus(1) and $out eq "" and $err eq "";
+    return [ ] if $rc != 0 and $out eq "" and $err eq "";
     return $self->set_error($err || $out) unless $rc == 0;
 
     my (@result, $uses);
     foreach (split(/\n/, $out))
     {
+        s/^\s*//;
+
 	# push undef for any non-existing objects 
 	if (/Object version could not be identified/)
 	{
@@ -877,17 +1135,17 @@ sub finduse
 	    next;
 	}
 
-	# ignore the dummy "use" line printed if object is not used anywhere
-	if (/Object is not used in scope/)
+	# ignore the dummy "use" line printed if object is not used anywhere,
+        # also the dummy "Projects:" line (web mode)
+	if (/Object is not used in scope|Projects:/)
 	{
 	    next;
 	}
 
 	# a usage line is matched by finduse_rx
-	if (/$self->{finduse_rx}/)
+	if (my ($path, $proj_spec) = /$self->{finduse_rx}/)
 	{
-	    my ($path, $project) = ($1, $2);
-	    $uses->{$self->_projspec2objectname($project)} = $path;
+	    $uses->{$self->project_object($proj_spec)} = $path;
 	    next;
 	}
 
@@ -904,34 +1162,71 @@ sub finduse
 
 sub findpath
 {
-    my ($self, $file_spec, $proj_vers) = @_;
+    my $self = shift;
+    my ($file_spec, $proj_spec) = validate(\@_, _FILE_SPEC, Str);
     my $finduse = $self->finduse($file_spec);
     return unless defined $finduse;
     return $self->set_error("`$file_spec' matches more than one object") 
 	unless @$finduse == 1;
-    return $finduse->[0]->[1]->{$proj_vers};
+    return $finduse->[0]->[1]->{$self->project_object($proj_spec)};
+}
+
+
+use constant _FROM_TO_NAME =>
+    from => Optional[_FILE_SPEC], 
+    to   => Optional[_FILE_SPEC], 
+    name => Optional[Str];
+
+sub relations_arrayref
+{
+    my ($self, %args) = @_;
+    validate([\%args], Dict[ _FROM_TO_NAME ]);
+
+    my ($rc, $out, $err) = $self->_ccm(qw/ relate -show -nf -l /,
+	    map { defined $args{$_} ? ( "-$_" => $args{$_}) : () } qw/from to name/);
+
+    # NOTE: If there are no hits, `ccm relate' exits 
+    # with status 1 (classic mode) or 6 (web mode),
+    # but produces no output on either stdout and stderr.
+    return [ ] if $rc != 0 and $out eq "" and $err eq "";
+    return $self->set_error($err || $out) unless $rc == 0;
+
+    my (@result, $from, $to);
+    foreach (split(/\n/, $out))	        	# split into lines 
+    {
+        # NOTE: In web mode, the "default long format" (option "-l") prints
+        #   (from-info) relation-name (to-info) timestamp
+        # where info is
+        #    objectname status owner
+        # which can be reasonably parsed assuming that status and owner
+        # don't contain blanks.
+        my ($from, $name, $to, $timestamp) = /^\((.*?)\) (\S+) \((.*?)\) (.*)$/;
+        ($from, $to) = map { s/ \S+ \S+$//; $self->object($_) } $from, $to;
+        push @result, [$from, $name, $to, $timestamp];
+    }
+
+    return \@result;
 }
 
 
 sub relations_hashref
 {
     my ($self, %args) = @_;
+    validate([\%args], Dict[ _FROM_TO_NAME,
+                             from_attributes => Optional[ArrayRef[Str]],
+                             to_attributes   => Optional[ArrayRef[Str]] ]);
 
     my %defaulted;
-    foreach my $arg (qw/from_attributes to_attributes/)
+    foreach (qw/from_attributes to_attributes/)
     {
-	croak(__PACKAGE__.qq[::relations_hashref: optional argument "$arg" must be an array ref])
-	    if exists $args{$arg} && !UNIVERSAL::isa($args{$arg}, 'ARRAY');
+	next if $args{$_};
 
-	# default keyword "objectname"
-	unless ($args{$arg})
-	{
-	    $args{$arg} = [ qw/objectname/ ];
-	    $defaulted{$arg}++;
-	}
+        # default to keyword "objectname"
+        $args{$_} = [ qw/objectname/ ];
+        $defaulted{$_}++;
     }
 
-    my $result = $self->_relations(\%args, 0);
+    my $result = $self->_relations(\%args, ROW_HASH);
     return unless $result;
 
     # if we defaulted "objectname" above, replace the corresponding
@@ -950,49 +1245,73 @@ sub relations_hashref
 sub relations_object
 {
     my ($self, %args) = @_;
+    validate([\%args], Dict[ _FROM_TO_NAME,
+                             from_attributes => Optional[ArrayRef[Str]],
+                             to_attributes   => Optional[ArrayRef[Str]] ]);
 
-    foreach my $arg (qw/from_attributes to_attributes/)
-    {
-	croak(__PACKAGE__.qq[::relations_object: optional argument "$arg" must be an array ref])
-	    if $args{$arg} && !UNIVERSAL::isa($args{$arg}, 'ARRAY');
-	$args{$arg} ||= [];		# _relations below likes 'em defined
-    }
+    $args{$_} ||= [] foreach qw/from_attributes to_attributes/;
+                                # coz _relations() likes 'em defined
 
-    return $self->_relations(\%args, 1);
+    return $self->_relations(\%args, ROW_OBJECT);
 }
 
 
 # helper method: synthesize command and parse result of "ccm relate -show ..."
 sub _relations
 {
-    my ($self, $args, $want_row_object) = @_;
-    # NOTE: $args->{from_attributes}/$args->{to_attributes} must not be undef
+    my ($self, $args, $row_type) = @_;
+    # NOTES: 
+    # (1) $args->{from_attributes}/$args->{to_attributes} must not be undef
+    # (2) only ROW_HASH and ROW_OBJECT are allowed for $row_type
 
-    my $want_from = _want($want_row_object, $args->{from_attributes});
+
+    my $want_from = _want($row_type, $args->{from_attributes});
     my $ncol_from = keys %$want_from;
-    my $want_to = _want($want_row_object, $args->{to_attributes});
-    my $ncol_to = keys %$want_to;
+    my $want_to   = _want($row_type, $args->{to_attributes});
+    my $ncol_to   = keys %$want_to;
+    my $format;
 
-    # NOTE: If the "from" part (the part before "::") of the format
-    # or the "to" part are empty, Synergy may default it from
-    # the other part. Hence both "from" and "to" part below are never
-    # empty, even if $want_from or $want_to are empty.
-    my $format = 
-	$RS . 			# record delimiter
-	join($FS, 			# column separator
-	    values %$want_from,		# "from" part
-	    "::", 			# will be replaced by name of relation
-	    values %$want_to) .		# "to" part
-	$FS;				# will be followed by create_time
+    if ($self->web_mode)
+    {
+        # NOTE: Web mode wants "%[from]keyword" and "%[to]keyword", resp.,
+        # instead of just "%keyword" for from_attributes
+        # and to_attributes, resp.
+        s/^%/%[from]/ foreach values %$want_from;
+        s/^%/%[to]/   foreach values %$want_to;
+
+        $format =
+            $RS . 			# record delimiter
+            join($FS, 			# column separator
+                values %$want_from,	# "from" part
+                "%name", 		# name of relation
+                values %$want_to,       # "to" part
+                "%create_time");        # create_time of relation
+    }
+    else                                # classic mode
+    {
+        # NOTE: If the "from" part (the part before "::") of the format
+        # or the "to" part are empty, Synergy may default it from
+        # the other part. Hence both "from" and "to" part below are never
+        # empty, even if $want_from or $want_to are empty.
+
+        $format = 
+            $RS . 			# record delimiter
+            join($FS, 			# column separator
+                values %$want_from,	# "from" part
+                "::", 			# will be replaced by name of relation
+                values %$want_to) .	# "to" part
+            $FS;			# will be followed by create_time
+    }
 
     my ($rc, $out, $err) = $self->_ccm(
-	qw/relate -show -format/ => $format, 
+	qw/relate -show -nf -format/ => $format, 
 	    map { defined $args->{$_} ? ( "-$_" => $args->{$_}) : () } 
 		qw/from to name/);
 
-    # NOTE: if there are no hits, `ccm relate -show' exits with status 1, 
-    # but produces no output on either stdout and stderr
-    return [ ] if $rc == _exitstatus(1) and $out eq "" and $err eq "";
+    # NOTE: If there are no hits, `ccm relate' exits 
+    # with status 1 (classic mode) or 6 (web mode),
+    # but produces no output on either stdout and stderr.
+    return [ ] if $rc != 0 and $out eq "" and $err eq "";
     return $self->set_error($err || $out) unless $rc == 0;
 
     my (@result, $from, $to);
@@ -1004,8 +1323,8 @@ sub _relations
 
 	# first $ncol_from columns are the "from" part;
 	# avoid to parse "from" part more than once if "from => ..." was specified
-	my @cols_from = splice @cols, 0, $ncol_from;
-	$from = $self->_parse_query_result($want_from, \@cols_from, $want_row_object)
+	my @cols_from = splice(@cols, 0, $ncol_from);
+	$from = $self->_query_result($want_from, \@cols_from, $row_type)
 	    unless $args->{from} && $from;
 
 	# next column is the name of the relation; trim whitespace
@@ -1013,8 +1332,8 @@ sub _relations
 
 	# next $ncol_to columns are the "to" part;
 	# avoid to parse "to" part more than once if "to => ..." was specified
-	my @cols_to = splice @cols, 0, $ncol_to;
-	$to = $self->_parse_query_result($want_to, \@cols_to, $want_row_object)
+	my @cols_to = splice(@cols, 0, $ncol_to);
+	$to = $self->_query_result($want_to, \@cols_to, $row_type)
 	    unless $args->{to} && $to;
 
 	# last column is the create_time of the relation; trim whitespace
@@ -1036,12 +1355,8 @@ sub _relations
 sub project_tree
 {
     my $self = shift;
-    _usage(@_, 1, undef, '\\%options, @projects');
-
-    my ($options, @projects) = @_;
-    $options = {} unless defined $options;
-    croak(__PACKAGE__.qq[::project_tree: argument 1 ("options") must be a HASH ref: $options])
-	unless ref $options eq "HASH";
+    my ($options, $projects) = 
+        validate(\@_, HashRef, slurpy ArrayRef[_PROJECT_SPEC]);
 
     my %wanted = %$options;	# make a copy, because we're modifying it below
     my $mark_projects = delete $wanted{mark_projects};
@@ -1050,7 +1365,7 @@ sub project_tree
     # NOTE: all other options are passed thru to traverse() 
     # (and get checked there)
 
-    my (%tree, $tag);		# referenced in closure below
+    my (%tree, $idx);		# referenced in closure below
     $wanted{wanted} = sub
     {
 	# skip projects unless "mark_projects" is in effect
@@ -1063,15 +1378,16 @@ sub project_tree
 	# the project entry when "mark_projects" is in effect
 	my $path = VCS::CMSynergy::Traversal::path();
 	$path =~ s/$omit_rx// or next if $omit_rx;
-	@projects == 1 ? $tree{$path} : $tree{$path}->[$tag] ||= $_;
+	@$projects == 1 ? $tree{$path} : $tree{$path}->[$idx] ||= $_;
     };
 
-    for ($tag = 0; $tag < @projects; $tag++)
+    $idx = 0;
+    foreach my $proj (@$projects)
     {
-	my $proj = $projects[$tag];
 	$proj = $self->project_object($proj) unless ref $proj;
 
 	$proj->traverse(\%wanted) or return;
+        $idx++;
     }
 
     return \%tree;
@@ -1081,13 +1397,10 @@ sub project_tree
 sub project_diff
 {
     my $self = shift;
-    _usage(@_, 4, 4, '\\%options, $old_project, $new_project, $differ');
+    my ($arg_options, $old_project, $new_project, $differ) = 
+        validate(\@_, HashRef, _PROJECT_SPEC, _PROJECT_SPEC, HasMethods[qw( added deleted changed )]);
 
-    my ($arg_options, $old_project, $new_project, $differ) = @_;
-    $arg_options = {} unless defined $arg_options;
-    croak(__PACKAGE__.qq[::project_diff: argument 1 ("options") must be a HASH ref: $arg_options])
-	unless ref $arg_options eq "HASH";
-
+    $arg_options = {} unless defined $arg_options; # still needed?
     my %options = %$arg_options;	# make a copy, so we can't inadvertently modify it
     my $hide_sub_trees = delete $options{hide_sub_trees};
 
@@ -1145,9 +1458,8 @@ sub project_diff
 sub get_attribute
 {
     my $self = shift;
-    _usage(@_, 2, 2, '$attribute_name, $file_spec');
+    my ($name, $file_spec) = validate(\@_, Str, _FILE_SPEC);
 
-    my ($name, $file_spec) = @_;
     my ($rc, $out, $err) = $self->_ccm(qw/attribute -show/, $name, $file_spec);
     return $out if $rc == 0;
     return if ($err || $out) =~ /Attribute .* does not exist on object/;
@@ -1158,9 +1470,8 @@ sub get_attribute
 sub set_attribute
 {
     my $self = shift;
-    _usage(@_, 3, 3, '$attribute_name, $file_spec, $value');
+    my ($name, $file_spec, $value) = validate(\@_, Str, _FILE_SPEC, Str);
 
-    my ($name, $file_spec, $value) = @_;
 
     # try "ccm attribute -modify ..." first
     my ($rc, $out, $err) = $self->_ccm_attribute(
@@ -1194,7 +1505,7 @@ sub _ccm_attribute
     for (my $i = 0; $i < @args; $i++)
     {
 	next unless $args[$i] =~ /^-(?:v|value)$/;
-	(undef, $value) = splice @args, $i, 2;
+	(undef, $value) = splice(@args, $i, 2);
 	last;
     }
     croak(__PACKAGE__.qq[::_ccm_attribute: mssing argument "-value"])
@@ -1238,14 +1549,11 @@ sub _ccm_attribute
 sub create_attribute
 {
     my $self = shift;
-    _usage(@_, 3, undef, '$name, $type, $value, @file_specs');
-
-    my ($name, $type, $value, @file_specs) = @_;
-    croak(__PACKAGE__.'::create_attribute: argument 3 (value) must be defined')
-	unless defined $value;
+    my ($name, $type, $value, $file_specs) = 
+        validate(\@_, Str, Str, Str, slurpy ArrayRef[_FILE_SPEC]);
 
     my ($rc, $out, $err) = $self->_ccm_attribute(
-	    -create => $name, -value => $value, -type => $type, @file_specs);
+	    -create => $name, -value => $value, -type => $type, @$file_specs);
     return $self->set_error($err || $out) unless $rc == 0;
     return 1;
 }
@@ -1254,34 +1562,32 @@ sub create_attribute
 sub delete_attribute
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$name, @file_specs');
+    my ($name, $file_specs) = validate(\@_, Str, slurpy ArrayRef[_FILE_SPEC]);
 
-    my ($name, @file_specs) = @_;
-    return scalar $self->ccm(qw/attribute -delete/, $name, @file_specs);
+    return scalar $self->ccm(qw/attribute -delete/, $name, @$file_specs);
 }
 
 
 sub copy_attribute
 {
     my $self = shift;
-    _usage(@_, 3, undef, '{ $name | \\@names }, [ \\@flags, ] $from_file_spec, $to_file_spec...');
 
-    my ($name, @file_specs) = @_;
-    $name = join(':', @$name) if UNIVERSAL::isa($name, 'ARRAY');
-
-    my @flags = UNIVERSAL::isa($file_specs[0], 'ARRAY') ?
-	map { "-$_" } @{ shift @file_specs } : ();
+    # extract flags first (makes validation easier)
+    my @flags;
+    @flags = map { "-$_" } @{ splice(@_, 1, 1) } if defined $_[1] && ref $_[1] eq "ARRAY";
     
-    return scalar $self->ccm(qw/attribute -copy/, $name, @flags, @file_specs);
+    my ($names, $file_specs) = validate(\@_, Str | ArrayRef[Str], slurpy ArrayRef[_FILE_SPEC]);
+    $names = join(':', @$names) if ref $names eq "ARRAY";
+
+    return scalar $self->ccm(qw/attribute -copy/, $names, @flags, @$file_specs);
 }
 
 
 sub list_attributes
 {
     my $self = shift;
-    _usage(@_, 1, 1, '$file_spec');
+    my ($file_spec) = validate(\@_, _FILE_SPEC);
 
-    my $file_spec = shift;
     my ($rc, $out, $err) = $self->_ccm(qw/attribute -la/, $file_spec);
     return $self->set_error($err || $out) unless $rc == 0;
 
@@ -1294,16 +1600,18 @@ sub list_attributes
 sub property
 {
     my $self = shift;
-    _usage(@_, 2, 2, '{ $keyword | \@keywords }, $file_spec');
+    my ($keyword_s, $file_spec) = 
+        validate(\@_, ( Str | ArrayRef[Str] ), _FILE_SPEC);
 
-    my ($keyword_s, $file_spec) = @_;
-    if (UNIVERSAL::isa($keyword_s, 'ARRAY'))
+    if (ref $keyword_s)
     {
-	return $self->_property($file_spec, $keyword_s, 0);
+        # return a hash ref of property names and values
+	return $self->_property($file_spec, $keyword_s, ROW_HASH);
     }
     else
     {
-	my $row = $self->_property($file_spec, [ $keyword_s ], 0) or return;
+        # return just the property value
+	my $row = $self->_property($file_spec, [ $keyword_s ], ROW_HASH) or return;
 	return $row->{$keyword_s};
     }
 }
@@ -1311,9 +1619,10 @@ sub property
 
 sub _property
 {
-    my ($self, $file_spec, $keywords, $want_row_object) = @_;
+    my ($self, $file_spec, $keywords, $row_type) = @_;
+    # NOTE: only ROW_HASH and ROW_OBJECT are allowed for $row_type
 
-    my $want = _want($want_row_object, $keywords);
+    my $want = _want($row_type, $keywords);
     my $format = $RS . join($FS, values %$want) . $FS;
 
     my ($rc, $out, $err) = 
@@ -1322,27 +1631,24 @@ sub _property
 
     my (undef, $props) = split(/\Q$RS\E/, $out, -1);
     my @cols = split(/\Q$FS\E/, $props, -1);	# don't strip empty trailing fields
-    return $self->_parse_query_result($want, \@cols, $want_row_object);
+    return $self->_query_result($want, \@cols, $row_type);
 }
-
 
 sub cat_object
 {
     my $self = shift;
-    _usage(@_, 1, 2, '$object [, $destination]');
 
     my $want_return = @_ == 1;
-    my ($object, $destination) = @_;
-    croak(__PACKAGE__.qq[::cat_object: argument 1 (object) must be a VCS::CMSynergy::Object: $object])
-	unless UNIVERSAL::isa($object, "VCS::CMSynergy::Object");
+    my ($file_spec, $destination) = 
+        validate(\@_, _FILE_SPEC, Optional[Str | GlobRef | FileHandle | ScalarRef | ArrayRef | CodeRef]);
 
     my $out;
     $destination = \$out if $want_return;
 
     my ($rc, undef, $err) = $self->_ccm(
-	cat => $object, { out => $destination, binmode_stdout => 1 });
+	cat => $file_spec, { out => $destination, binmode_stdout => 1 });
 
-    return $self->set_error($err || "`ccm cat $object' failed") unless $rc == 0;
+    return $self->set_error($err || "`ccm cat $file_spec' failed") unless $rc == 0;
     return $want_return ? $out : 1;
 }
 
@@ -1380,29 +1686,25 @@ sub ls
 sub ls_arrayref
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$file_spec, @keywords');
+    my ($file_spec, $keywords) = _FILE_SPEC_KEYWORDS->(@_);
 
-    my $file_spec = shift;
-    return $self->_ls($file_spec, \@_, ROW_ARRAY);
+    return _flatten_rows($self->_ls($file_spec, $keywords, ROW_HASH), $keywords);
 }
 
 
 sub ls_hashref
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$file_spec, @keywords');
+    my ($file_spec, $keywords) = _FILE_SPEC_KEYWORDS->(@_);
 
-    my $file_spec = shift;
-    return $self->_ls($file_spec, \@_, ROW_HASH);
+    return $self->_ls($file_spec, $keywords, ROW_HASH);
 }
 
 
 sub ls_object
 {
     my $self = shift;
-    _usage(@_, 0, 1, '[ $file_spec ]');
-
-    my $file_spec = shift;
+    my ($file_spec) = validate(\@_, Optional[_FILE_SPEC]);
     $file_spec = '.' unless defined $file_spec;
 
     return $self->_ls($file_spec, [], ROW_OBJECT);
@@ -1413,7 +1715,7 @@ sub _ls
 {
     my ($self, $file_spec, $keywords, $row_type) = @_;
 
-    my $want = _want($row_type == ROW_OBJECT, $keywords);
+    my $want = _want($row_type, $keywords);
     
     my $format = $RS . join($FS, values %$want) . $FS;
 
@@ -1429,13 +1731,8 @@ sub _ls
 	next unless length($_);			# skip empty leading record
 
 	my @cols = split(/\Q$FS\E/, $_, -1);	# don't strip empty trailing fields
-	my $row = $self->_parse_query_result($want, \@cols, $row_type == ROW_OBJECT);
+	my $row = $self->_query_result($want, \@cols, $row_type);
 	push @result, $row;
-    }
-
-    if ($row_type == ROW_ARRAY)
-    {
-	$_ = [ @$_{@$keywords} ] foreach @result;
     }
     return \@result;
 }
@@ -1444,9 +1741,8 @@ sub _ls
 sub set
 {
     my $self = shift;
-    _usage(@_, 0, 2, '[$option [, $value]]');
+    my ($option, $value) = validate(\@_, Optional[Str], Optional[Str]);
 
-    my ($option, $value) = @_;
     if (@_ == 0)
     {
 	my ($rc, $out, $err) = $self->_ccm(qw/set/);
@@ -1564,24 +1860,25 @@ sub _text_to_tempfile
 # calls $self->_ccm(@args).
 sub ccm_with_text_editor
 {
-    my ($self, $text, @args) = @_;
+    my $self = shift;
+    my ($text, $args) = valiedate(\@_, Str, slurpy ArrayRef);
 
     my $tempfile = $self->_text_to_tempfile($text) or return;
 
     # NOTE: 
-    # (1) $Config{cp} is "copy" on Win32, but CMSynergy doesn't invoke
+    # (1) On Win32 $Config{cp} is "copy", but Synergy doesn't invoke
     #     the command processor on Windows when executing user
     #     callbacks like "text_editor"; thus "shell" builtins like "copy"
     #     (and redirection) won't work in user callbacks; hence 
     #     prefix it with "cmd /c" (use "/b" to get a binary copy
-    #     and "/y" to overwite files without prompting)
-    # (2) $tempfile is safe wrt cygwin, because $Config{cp} is
-    #     a cygwin program ("/usr/bin/cp") on cygwin.
+    #     and "/y" to overwite files without prompting).
+    # (2) On Cygwin $Config{cp} is "cp", i.e. a Cygwin program.
+    #     Hence it is safe to pass the Cygwin pathname $tempfile to it.
     my ($rc, $out, $err) = $self->_ccm_with_option(
 	text_editor => $^O eq 'MSWin32' ?
 	    qq[cmd /c copy /b /y "$tempfile" $self->{"%filename"}] :		#/
-	    qq[$Config{cp} '$tempfile' $self->{"%filename"}],
-	@args);
+	    qq[$Config{cp} "$tempfile" $self->{"%filename"}],
+	@$args);
     return $self->set_error($err || $out) unless $rc == 0;
     return wantarray ? ($rc, $out, $err) : 1;
 }
@@ -1615,7 +1912,7 @@ sub dcm_enabled		{ shift->dcm_database_id ne ""; }
 __PACKAGE__->_memoize_method(default_project_instance => sub
 {
     my $self = shift;
-    return $self->version >= 6.3 && $self->dcm_enabled ?
+    return $self->dcm_enabled ?
 	$self->dcm_database_id . $self->dcm_delimiter . '1' : '1';
 });
 
@@ -1647,7 +1944,7 @@ sub AUTOLOAD
     # we don't allow autoload of class methods
     croak(qq[Can't locate class method "$method" via class "$class"]) #'
 	unless ref $this;
-    $Debug && $this->trace_msg(qq[autoloading method "$method"\n], 5);
+    DEBUG qq[autoloading method "$method"];
 
     # create the new method on the fly
     no strict 'refs';
@@ -1685,25 +1982,19 @@ sub object
           "\n  or     \$ccm->object(\$objectname)")
 	unless @_ == 1 || @_ == 4;
     
-    return VCS::CMSynergy::Object->new($self, @_) if @_ == 4;
-
-    my $objectname = shift;
-    return VCS::CMSynergy::Object->new($self, $1, $2, $3, $4)
-	if $objectname =~ /$self->{objectname_rx}/;
-
-    return $self->set_error("invalid objectname `$objectname'");
+    return VCS::CMSynergy::Object->new($self, @_ == 4 ? join(":", @_) : $_[0]);
 }
 
 # convenience methods to get the base model object etc
 # NOTE: base_model should actually be determined from attribute "active_model"
 # of "default-1:admin:AC" (the value is an old-style fullname,
 # but I've never seen anything else than "base/model/base/1").
-sub base_model	{ $_[0]->object(qw(base 1 model base)); }
-sub base_admin	{ $_[0]->object(qw(base 1 admin base)); }
-sub dcm_admin	{ $_[0]->object(qw(dcm 1 admin dcm)); }
-sub cs_admin	{ $_[0]->object(qw(cs 1 admin 1)); }
-sub cvtype	{ $_[0]->object($_[1], qw(1 cvtype base)); }
-sub attype	{ $_[0]->object($_[1], qw(1 attype base)); }
+sub base_model	{ $_[0]->object("base:1:model:base"); }
+sub base_admin	{ $_[0]->object("base:1:admin:base"); }
+sub dcm_admin	{ $_[0]->object("dcm:1:admin:dcm"); }
+sub cs_admin	{ $_[0]->object("cs:1:admin:1"); }
+sub cvtype	{ $_[0]->object("$_[1]:1:cvtype:base"); }
+sub attype	{ $_[0]->object("$_[1]:1:attype:base"); }
 
 # FIXME: instead of implementing the inverse function to the
 # ACcent method "displayname" of folder/task/problem objects, one could use
@@ -1754,9 +2045,9 @@ sub project_object
 sub object_other_version
 {
     my $self = shift;
-    _usage(@_, 2, 2, '$object, $other_version');
+    my ($object, $other_version) = 
+        validate(\@_, InstanceOf["VCS::CMSynergy::Object"], Str);
 
-    my ($object, $other_version) = @_;
     return $self->object($object->name, $other_version, $object->cvtype, $object->instance);
 }
 
@@ -1765,10 +2056,9 @@ sub object_other_version
 sub object_from_cvid
 {
     my $self = shift;
-    _usage(@_, 1, undef, '$cvid, @keywords');
+    my ($cvid, $keywords) = validate(\@_, Str, _KEYWORDS);
 
-    my $cvid = shift;
-    return $self->_property("\@=$cvid", \@_, 1);
+    return $self->_property("\@=$cvid", $keywords, ROW_OBJECT);
     # NOTE: if the cvid doesn't exist, "ccm property ..." has exit code 0, but 
     # "Warning: Object version representing type does not exist." on stderr
 }
@@ -1778,11 +2068,12 @@ sub object_from_cvid
 sub object_from_proj_ref
 {
     my $self = shift;
-    _usage(@_, 2, undef, '{ $path | \\@path_components }, $proj_spec, @keywords');
+    my ($path, $proj_spec, $keywords) =
+        validate(\@_, Str | ArrayRef[Str], _PROJECT_SPEC, _KEYWORDS);
 
-    my ($path, $proj_spec) = splice @_, 0, 2;
     $path = join(VCS::CMSynergy::Client::_pathsep, @$path) if ref $path; 
-    return $self->_property("$path\@$proj_spec", \@_, 1);
+    $proj_spec = $proj_spec->displayname if ref $proj_spec;
+    return $self->_property("$path\@$proj_spec", $keywords, ROW_OBJECT);
     # NOTE/FIXME: no error if path isn't bound? possible errors:
     #   Specified project not found in database: '$self'
     #   Object version could not be identified from reference form: '$path'

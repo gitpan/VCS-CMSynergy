@@ -3,14 +3,13 @@ abstract: 'Perl interface to IBM Rational Synergy'
 author:
   - 'Roderich Schupp <schupp@argumentum.de>'
 build_requires:
-  End: 0
-  ExtUtils::MakeMaker: 6.42
-  Test::Deep: 0.103
+  ExtUtils::MakeMaker: 6.36
   Test::More: 0
 configure_requires:
-  ExtUtils::MakeMaker: 6.42
+  ExtUtils::MakeMaker: 6.36
 distribution_type: module
-generated_by: 'Module::Install version 0.94'
+dynamic_config: 1
+generated_by: 'Module::Install version 1.14'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -21,6 +20,7 @@ no_index:
     - examples
     - inc
     - t
+    - xt
   module:
     - VCS::CMSynergy::ObjectTieHash
   package:
@@ -28,13 +28,19 @@ no_index:
     - Tie::ReadonlyArray
 requires:
   Class::Accessor::Fast: 0
+  Digest::MD5: 0
   File::Spec: 0
   File::Temp: 0
-  IPC::Run3: 0.030
-  List::Util: 1.09
-  Scalar::Util: 1.09
+  IPC::Run3: '0.030'
+  List::Util: '1.09'
+  Log::Log4perl: 0
+  Pod::Usage: 0
+  Scalar::Util: '1.09'
+  Tie::CPHash: 0
   Time::HiRes: 0
-  perl: 5.006
+  Type::Params: 0
+  Types::Standard: 0
+  perl: '5.006'
 resources:
   license: http://dev.perl.org/licenses/
-version: 1.35
+version: '1.40'

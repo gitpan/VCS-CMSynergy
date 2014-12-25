@@ -57,3 +57,12 @@
 ^inc/Scalar/Util.pm$
 ^t/zz
 ^TODO\.
+
+# extended tests
+^xt/
+
+# packfiles that must not be distributed
+^packfiles/
+
+# fake minimalistic ccm executable
+^fake-ccm-home/

@@ -11,22 +11,22 @@ VCS::CMSynergy - Perl interface to IBM Rational Synergy
   ($rc, $out, $err) = $ccm->ccm($ccm_command, @ccm_args);
   ($rc, $out, $err) = $ccm->any_ccm_command(@ccm_args); 
 
-  $ary_ref = $ccm->query(@ccm_args);
-  $ary_ref = $ccm->query_arrayref($query, @keywords);
-  $ary_ref = $ccm->query_hashref($query, @keywords);
-  $ary_ref = $ccm->query_object($query, @keywords);
+  $aref = $ccm->query(@ccm_args);
+  $aref = $ccm->query_arrayref($query, @keywords);
+  $aref = $ccm->query_hashref($query, @keywords);
+  $aref = $ccm->query_object($query, @keywords);
 
-  $ary_ref = $ccm->finduse(@args);
+  $aref = $ccm->finduse(@args);
   $path = $ccm->findpath($file_spec, $proj_vers);
 
-  $ary_ref = $ccm->history(@ccm_args);
-  $ary_ref = $ccm->history_arrayref($file_spec, @keywords);
-  $ary_ref = $ccm->history_hashref($file_spec, @keywords);
+  $aref = $ccm->history(@ccm_args);
+  $aref = $ccm->history_arrayref($file_spec, @keywords);
+  $aref = $ccm->history_hashref($file_spec, @keywords);
 
-  $ary_ref = $ccm->ls(@ccm_args);
-  $ary_ref = $ccm->ls_object($file_spec);
-  $ary_ref = $ccm->ls_arrayref($file_spec, @keywords);
-  $ary_ref = $ccm->ls_hashref($file_spec, @keywords);
+  $aref = $ccm->ls(@ccm_args);
+  $aref = $ccm->ls_object($file_spec);
+  $aref = $ccm->ls_arrayref($file_spec, @keywords);
+  $aref = $ccm->ls_hashref($file_spec, @keywords);
 
   $value = $ccm->get_attribute($attr_name, $file_spec);
   $ccm->set_attribute($attr_name, $file_spec, $value);
@@ -150,12 +150,12 @@ ESD to connect to the CM Synergy engine.
 
 =item C<server> (string)
 
-Synergy server URL (for Synergy 7.0 and aboe). Specifying this instead
+Synergy server URL (for Synergy 7.0 and above). Specifying this instead
 of C<host> will start your Synergy session in web mode.
 
 Note that support for web mode is incomplete and only lightly tested.
 
-=item C<ini_file> (string)
+=item C<ini_file> (string) B<(classic mode only)>
 
 CM Synergy ini file to use. 
 
@@ -169,6 +169,8 @@ Or it might fail when invoked by the same user at a later time because of
 changes to her ini file (e.g. because of another session between
 invocations of the script). So if you really want to rely on an ini file,
 you have to supply it explicitly.
+
+This option is only valid when using the classic mode to connect to Synergy.
 
 =item C<CCM_ADDR> (string)
 
@@ -302,7 +304,7 @@ on to the other program.
 
 It defaults to false unless you also specify C<CCM_ADDR>.
 
-=item C<UseCoprocess> (boolean)
+=item C<UseCoprocess> (boolean) B<(classic mode only)>
 
 This feature is highly experimental, B<use it at your own risk>.
 
@@ -465,7 +467,7 @@ This is accomplished by a suitable C<AUTOLOAD> method.
 
 =head2 query
 
-  $ary_ref = $ccm->query(@args);
+  $aref = $ccm->query(@args);
 
 Executes the B<ccm query> command with the given C<@args> as parameters.
 The output (as formatted by the C<-format> option) is split into lines.
@@ -492,7 +494,7 @@ L<query_hashref|/"query_arrayref, query_hashref"> methods that
 return this information in 
 structured form. If you are only interested in the identity of
 objects in the result set, you should look at the 
-L<query_object|/"query_object, query_object_with_attributes"> method.
+L<query_object|/"query_object"> method.
 
 Note that L</query> will probably produce
 unpredictable results when the C<-format> option references attributes
@@ -502,11 +504,11 @@ L<query_hashref|/"query_arrayref, query_hashref"> handle this case correctly.
 
 =head2 query_arrayref, query_hashref
 
-  $ary_ref = $ccm->query_arrayref($query, @keywords);
-  print "@$_\n" foreach @$ary_ref;
+  $aref = $ccm->query_arrayref($query, @keywords);
+  print "@$_\n" foreach @$aref;
 
-  $ary_ref = $ccm->query_hashref($query, @keywords);
-  print "@$_{@keywords}\n" foreach @$ary_ref;
+  $aref = $ccm->query_hashref($query, @keywords);
+  print "@$_{@keywords}\n" foreach @$aref;
 
 C<query_arrayref> and C<query_hashref>
 execute B<ccm query> with the query expression C<$query> asking
@@ -541,7 +543,7 @@ are neither built-in nor attributes:
 The value is a C<VCS::CMSynergy::Object> representing 
 the object in the result set.
 
-=item C<finduse>
+=item C<finduse> B<(classic mode only)>
 
 The value is a reference to a hash identifying in what parts of what
 projects the object is used.  A key in the hash is the project's objectname.
@@ -616,6 +618,7 @@ Note the following differences from B<ccm query>:
 =over 4
 
 =item *
+
 The keyword or attribute names given in C<@keywords> should I<not>
 contain a leading C<%>. Example:
 
@@ -643,10 +646,9 @@ it to B<ccm query>.
 
 =back
 
-=head2 query_object, query_object_with_attributes
+=head2 query_object
 
-  $ary_ref = $ccm->query_object($query);
-  $ary_ref = $ccm->query_object_with_attributes($query, @keywords);
+  $aref = $ccm->query_object($query, @keywords);
 
 Executes B<ccm query> with the query expression C<$query> 
 and returns a reference to an array of C<VCS::CMSynergy::Object>s 
@@ -666,8 +668,8 @@ using C<query_arrayref>:
     [ map { $_->[0] } @$ary ];	# project onto first (and only) column
   }
 
-C<query_object_with_attributes> is only useful when
-L</:cached_attributes> is in effect. 
+Calling C<query_object> with an optional list of C<@keywords> 
+is only useful when L</:cached_attributes> is in effect. 
 It returns the same result as C<query_object>,
 but the returned C<VCS::CMSynergy::Object>s have their attribute caches
 primed for the attributes listed in C<@keywords>. You could also
@@ -675,7 +677,7 @@ view it as a fancy form of C<query_hashref> where we don't store
 the attributes values of C<@keywords> in some anonymous hash,
 but rather in the corresponding object. Thus the loop
 
-  for my $obj (@{ $ccm->query_object_with_attributes("...", qw(foo)) })
+  for my $obj (@{ $ccm->query_object("...", qw(foo)) })
   {
     print "$obj: foo=", $obj->get_attribute("foo"), "\n";
   }
@@ -683,6 +685,9 @@ but rather in the corresponding object. Thus the loop
 issues a I<total of one> B<ccm> calls. Note: this example assumes 
 
   use VCS::CMSynergy qw(:cached_attributes);
+
+Note: C<query_object_with_attributes> is a deprecated alias for
+C<query_object>.
 
 =head2 query_count
 
@@ -702,70 +707,59 @@ If there was an error, C<undef> is returned.
 
 L<query_arrayref|/"query_arrayref, query_hashref">, 
 L<query_hashref|/"query_arrayref, query_hashref">,
-L<query_object|/"query_object, query_object_with_attributes">,
-L<query_object_with_attributes|/"query_object, query_object_with_attributes"> 
+L<query_object|/"query_object">,
+L<query_object|/"query_object"> 
 and L</query_count>
 support a shortcut notation for their common C<$query> parameter. To use
-this shortcut, supply a hash reference for C<$query>
+this shortcut, supply an array reference for C<$query>
 (instead of a simple string):
 
   $result = $ccm->query_hashref(
-    { type => 'csrc', match => '*.cpp' }, qw(objectname status));
+    [ type => 'csrc', name => '*.cpp' ], qw(objectname status));
 
-Every C<< key => value >> represents a simple query. Simple queries
-are combined with AND. The following simple queries are accepted:
+The array must have an even number of elements, shown here as a list of
+C<< $key => $value >> pairs. Each pair represents a simple query. 
+Simple queries with the same C<$key> are combined with "or"
+All other simple queries are combined with "and".
 
-=over 4
+Typically C<< $key => $value >>
+is translated to Synergy query syntax as C<$key = '$value'>.
+Note the quotes around C<$value>. However, quotes are omitted
+if C<$value> is either the string C<"TRUE"> or C<"FALSE">. 
 
-=item "key" => $scalar
+If C<$value> contains a wildcard character (C<*> or C<?>) the pair is
+translated as C<$key match '$value'>.
 
-This is translated to CMSynergy query syntax as C<key = '$scalar'>.
-Note the quotes around C<$scalar>. However, quotes are omitted
-if C<$scalar> is either the string C<"TRUE"> or C<"FALSE">. 
-In general, C<key> is the name of an attribute. 
-The following keys are treated specially:
+If C<$value> is an array reference the translation is the alternative
+of the array elements, e.g.
 
-=over 4
+  stooge => [qw( larry curly moe )]
 
-=item match
+is translated as
 
-C<< match => $scalar >> is short for C<name match '$scalar'>.
+  "(stooge='larry' or stooge='curly' or stooge='moe')"
 
-=item task
+=head2 query convenience functions: ANY_OF, NONE_OF 
 
-C<< task => $tasknr >> is short for 
-C<is_associated_cv_of(cvtype = 'task' and task_number = '$tasknr')>.
-This corresponds to CM Synergy's B<ccm query -task tasknr>.
+  use VCS::CMSynergy qw( ANY_OF NONE_OF );
+  
+  $aref = $ccm->query_object(ANY_OF(status => qw( integrate released )), ...);
 
-=back
+C<< ANY_OF(key => @values >> and C<< NONE_OF(key => @values) >> 
+are convenience B<functions> returning B<strings> that can be used 
+to build queries. For example, the above is the same as
 
-=item "key" => \@array
+  $aref = $ccm->query_object("(status='integrate' or status='released')", ...);
 
-This is translated as a call of a query function, 
-i.e. C<key('$array[0]', ...)>. Quoting is as described above.  Example:
+The result of C<ANY_OF> and C<NONE_OF> can safely be used in a query
+where syntactically an expression is expected.
 
-  $ccm->query_object(
-    { hierarchy_project_members => 
-      [ 'toolkit-1.0:project:1', 'none' ] });
-
-=item "key" => \%hash
-
-This is translated as a call of a query function with a nested query
-as parameter: Example:
-
-  $rel = '6.0';
-  $ccm->query_object(
-    { is_member_of => { release => $rel, match => '*web*' });
-
-gets translated to
-
-  "is_member_of(release='6.0' and name match '*web*')" 
-
-=back
+Note that you must explicity import C<ANY_OF> and C<NONE_OF> too use
+them without the full module name.
 
 =head2 history
 
-  $ary_ref = $ccm->history(@args);
+  $aref = $ccm->history(@args);
 
 Executes the B<ccm history> command with the given C<@args> as parameters.
 The output (probably formatted by the C<-format> option) is split into 
@@ -779,14 +773,15 @@ Perl argument. For literal arguments the C<qw()> notation may come in handy.
 
 If you are interested in the successor or predecessor or 
 certain attributes of an object in the history,
-you should look at the L<history_arrayref|/"history_arrayref, history_hashref">
-and L<history_hashref|/"history_arrayref, history_hashref">
+you should look at the 
+L<history_arrayref|/"history_arrayref, history_hashref B<(classic mode only)>">
+and L<history_hashref|/"history_arrayref, history_hashref B<(classic mode only)>">
 methods that return this information in structured form. 
 
-=head2 history_arrayref, history_hashref
+=head2 history_arrayref, history_hashref B<(classic mode only)>
 
-  $ary_ref = $ccm->history_arrayref($file_spec, @keywords);
-  $ary_ref = $ccm->history_hashref($file_spec, @keywords);
+  $aref = $ccm->history_arrayref($file_spec, @keywords);
+  $aref = $ccm->history_hashref($file_spec, @keywords);
 
 C<history_arrayref> and C<history_hashref>
 execute B<ccm history> for C<$file_spec> asking
@@ -863,7 +858,7 @@ contain a leading C<%>. Example:
 
 =head2 finduse
 
-  $ary_ref = $ccm->finduse(@args);
+  $aref = $ccm->finduse(@args);
 
 Executes the B<ccm finduse> command with the given C<@args> as parameters.
 It returns a reference to an array of rows, one per C<file_spec> given
@@ -933,11 +928,60 @@ returns
 
   "guilib/sources/main.c"
 
-=head2 relations_hashref
+=head2 relations_arrayref
+
+  $ccm->relations_arrayref(%options);
+
+  my $related = $ccm->relations_arrayref(to => "bufcolor.c-2:csrc:1");
+
+Executes B<ccm relate -show ...> where 
+C<%options> may contain any of the following keys:
+
+=over 4
+
+=item from => $file_spec, to => $file_spec
+
+Restricts one or both ends of the relation. The option value may
+be any C<$file_spec> accepted by CM Synergy including 
+a C<VCS::CMSynergy::Object>.
+
+=item name => $string
+
+Restricts the return value to relations of type C<$string>, 
+e.g. C<associated_cv> or C<successor>.
+
+=back
+
+The result is a reference to an array of 4-tuples
+
+  ($from, $name, $to, $create_time)
+
+=over 4
+
+=item $from, $to
+
+The value is a C<VCS::CMSynergy::Object> for the "from" or "to", resp., 
+element of the relation.
+
+=item $name
+
+The value is name of the relation.
+
+=item $create_time
+
+The value is the time the relation was created.
+
+=back
+
+If there are no hits, a reference to an empty array is returned.  
+
+If there was an error, C<undef> is returned.
+
+=head2 relations_hashref B<(classic mode only)>
 
   $ccm->relations_hashref(%options);
 
-  $ccm->relations_hashref(
+  my $related = $ccm->relations_hashref(
     to              => "bufcolor.c-2:csrc:1",
     from_attributes => [ qw/objecctname status owner/ ]);
 
@@ -1000,13 +1044,13 @@ The value is the time the relation was created.
 
 =back
 
-If there a no hits, a reference to an empty array is returned.  
+If there are no hits, a reference to an empty array is returned.  
 
 If there was an error, C<undef> is returned.
 
-=head2 relations_object
+=head2 relations_object B<(classic mode only)>
 
-  my $relations = $ccm->relations_object(%options);
+  my $related = $ccm->relations_object(%options);
 
 Executes B<ccm relate -show ...> where 
 C<%options> are the same as described for L</relations_hashref>. 
@@ -1037,8 +1081,8 @@ If there was an error, C<undef> is returned.
 If C<from_attributes> or C<to_attributes> are specified, these
 are used as hints to prime the attribute caches of the
 "from" or "to" C<VCS::CMSynergy::Object>s, resp., similar to
-L</query_object_with_attributes>. This is only useful when
-L</:cached_attributes> is in effect. 
+the optional C<@keywords> argument for L</query_object>. T
+his is only useful when L</:cached_attributes> is in effect. 
 
 =head2 project_tree
 
@@ -1496,7 +1540,7 @@ of arrays (of three elements each), e.g.
 
 =head2 ls
 
-  $ary_ref = $ccm->ls(@args);
+  $aref = $ccm->ls(@args);
 
 Executes the B<ccm ls> command with the given C<@args> as parameters.
 The output (as formatted by the C<-format> option) is split into lines.
@@ -1516,7 +1560,7 @@ the listed objects, you should look at the L</ls_object> method.
 
 =head2 ls_object
 
-  $ary_ref = $ccm->ls_object($file_spec);
+  $aref = $ccm->ls_object($file_spec);
 
 Lists information about a file or the contents of a directory
 using the work area name C<$file_spec>.
@@ -1525,7 +1569,7 @@ The default C<$file_spec> is the working directory.
 
 =head2 ls_arrayref
 
-  $ary_ref = $ccm->ls_arrayref($file_spec, @keywords);
+  $aref = $ccm->ls_arrayref($file_spec, @keywords);
 
 Lists the values of the built-in keywords or attributes supplied
 in C<@keywords> for a file or the contents of a directory
@@ -1554,7 +1598,7 @@ contain a leading C<%>. Example:
 
 =head2 ls_hashref
 
-  $ary_ref = $ccm->ls_hashref($file_spec, @keywords);
+  $aref = $ccm->ls_hashref($file_spec, @keywords);
 
 Lists the values of the built-in keywords or attributes supplied
 in C<@keywords> for a file or the contents of a directory
@@ -1649,33 +1693,6 @@ C<ccm_with_text_editor> returns the same
 value as the inner L</ccm> method, except when there is an error setting
 the new C<$value> of C<$option>.
 
-=head2 get_releases, set_releases
-
-  $releases = $ccm->get_releases;
-  $ccm->set_releases($releases);
-
-C<get_releases> fetches the release table (of active releases) as printed
-by B<ccm releases -show>. It returns a reference to a hash where
-each  key is the release name and the value is (a reference to) 
-a list of included releases, e.g. as formatted by L<Data::Dumper>:
-
-  $releases = {
-      '1.0'	=> [ qw(1.0) ],
-      '1.1'	=> [ qw(1.0 1.1) ],
-      '2.0'	=> [ qw(1.0 1.1 2.0) ],
-      '2.0_SP1'	=> [ qw(1.0 1.1 2.0 2.0_SP1) ],
-      '2.1'	=> [ qw(1.0 1.1 2.0 2.1) ],
-      '3.0'	=> [ qw(1.0 1.1 2.0 2.1 3.0) ],
-      '3.1'	=> [ qw(1.0 1.1 2.0 2.1 3.0 3.1) ]
-  };
-
-C<set_releases> updates the release table. It takes a reference to
-a hash with the same structure as returned by C<get_releases>.
-
-Note: This methods I<do not work> on CM Synergy 6.3 and higher,
-because the B<releases> command has been superceded by the 
-incompatible, though more powerful, B<release> command.
-
 =head2 ccm_addr
 
   print "CCM_ADDR=", $ccm->ccm_addr;
@@ -1726,8 +1743,7 @@ a project spec that only consists of the project's name and version:
   $proj_spec .= ":project:" . $ccm->default_project_instance
     unless $proj_spec =~ /:project:/;
 
-In versions of CM Synergy prior to 6.3 this is always C<"1">. 
-In newer versions it is C<"1"> if the database isn't DCM enabled,
+It is C<"1"> if the database isn't DCM enabled,
 otherwise it is 
 
     $ccm->dcm_database_id . $ccm->dcm_delimiter . "1"
@@ -1902,7 +1918,7 @@ Roderich Schupp, argumentum GmbH <schupp@argumentum.de>
 
 =head1 COPYRIGHT AND LICENSE
 
-The VCS::CMSynergy modules are Copyright (c) 2001-2010 argumentum GmbH, 
+The VCS::CMSynergy modules are Copyright (c) 2001-2014 argumentum GmbH, 
 L<http://www.argumentum.de>.  All rights reserved.
 
 You may distribute it under the terms of either the GNU General Public

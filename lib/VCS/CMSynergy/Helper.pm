@@ -1,9 +1,10 @@
 package VCS::CMSynergy::Helper;
 
-# Copyright (c) 2001-2010 argumentum GmbH, 
+# Copyright (c) 2001-2014 argumentum GmbH
 # See COPYRIGHT section in VCS/CMSynergy.pod for usage and distribution rights.
 
-our $VERSION = do { (my $v = q$Revision: 381 $) =~ s/^.*:\s*//; $v };
+use strict;
+use warnings;
 
 =head1 NAME
 

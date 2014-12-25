@@ -1,9 +1,9 @@
 #!/usr/bin/perl -w
 
-# Copyright (c) 2001-2010 argumentum GmbH, 
+# Copyright (c) 2001-2014 argumentum GmbH
 # See COPYRIGHT section in VCS/CMSynergy.pod usage and distribution rights.
 
-# $Revision: 381 $
+# $Revision$
 
 use inc::Module::Install;
 use Config;
@@ -49,8 +49,9 @@ nay qq{
   "$ccm_exe version" -
   perhaps this Synergy version is too old or too new.
   ABORTED!
-} unless $ccm_version =~ m{(CM Synergy|SYNERGY/CM|Telelogic Synergy|IBM Rational Synergy)\s+Version\s+(\d+\.\d+)}i;
-print "Detected $1 version $2\n";
+} unless $ccm_version =~ m{(?:CM Synergy|SYNERGY/CM|Telelogic Synergy|IBM Rational Synergy)\s+Version\s+(\d+\.\d+)}i;
+$ccm_version = $1;
+print "Detected Synergy version $ccm_version\n";
 
 warn qq{
   Please install module Scalar::Util and make sure it implements weaken().
@@ -73,28 +74,27 @@ version_from	'lib/VCS/CMSynergy.pm';
 # --- Dependencies
 
 requires	'perl'			=> '5.006';
+requires	'Class::Accessor::Fast' => 0;
+requires        'Tie::CPHash'           => 0;
+requires	'Digest::MD5'		=> 0;
 requires	'File::Spec'		=> 0;
 requires	'File::Temp'		=> 0;
 requires	'IPC::Run3'		=> '0.030';
-requires	'Time::HiRes'		=> 0;
-requires	'Class::Accessor::Fast' => 0;
 requires	'List::Util'		=> '1.09';
+requires        'Log::Log4perl'         => 0;
+requires	'Pod::Usage'		=> 0;
 requires	'Scalar::Util'		=> '1.09';
-requires	'Filesys::CygwinPaths'	=> 0 if $^O eq 'cygwin';
+requires	'Time::HiRes'		=> 0;
+requires	'Type::Params'		=> 0;
+requires	'Types::Standard'	=> 0;
 
 test_requires	'Test::More'		=> 0;
-test_requires	'Test::Deep'		=> '0.103';
-include		'Test::Deep';
-include		'Test::Deep::*';
-include		'Test::Deep::*::*';
-test_requires	'End'			=> 0;
-include		'End';
 
 # --- Build data
 
 install_script	'script/ccm_project_diff';
 
-clean_files	't/zz_*.t';
+clean_files	'xt/zz_*.t';
 
 no_index	module			=> 'VCS::CMSynergy::ObjectTieHash';
 no_index	package			=> 'VCS::CMSynergy::Traversal';
@@ -109,21 +109,27 @@ sub postamble
 {
     my $self = shift;
 
+    # maintainer test only
+    return "" unless $Module::Install::AUTHOR;
+
+    # UseCoprocess only works in classic mode
+    return "" if $ccm_version >= 7.2;
+
     # arrange for all tests to be run a second time with UseCoprocess => 1
     # (but only if we can find Expect.pm)
     if (eval { require Expect; import Expect 1.15; 1; })
     {
 	print "Detected suitable version of Expect.pm, enabling tests with UseCoprocess => 1\n";
 
-	foreach my $test (glob("t/*.t"))
+	foreach my $test (glob("xt/*.t"))
 	{
-	    next if $test =~ m{^t/zz_};
+	    next if $test =~ m{^xt/zz_};
 
 	    open my $t, "<$test" or die "Can't read $test: $!";
 	    next unless grep { /using coprocess/ } <$t>;
 	    close $t;
 	    
-	    (my $zz_test = $test) =~ s{t/}{t/zz_};
+	    (my $zz_test = $test) =~ s{xt/}{xt/zz_};
 	    open my $zz, ">$zz_test" or warn "Can't create $zz_test: $!";
 	    print $zz <<"ZZ";
 #!perl -w
